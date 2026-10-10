@@ -1,0 +1,9 @@
+.git/**
+.openai/**
+.tmp-chrome/**
+node_modules/**
+src/**
+*.vsix
+tsconfig.json
+tsconfig.extension.json
+vite.config.*
