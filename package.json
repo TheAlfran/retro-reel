@@ -1,0 +1,73 @@
+{
+  "name": "retro-reel",
+  "displayName": "Retro Reel",
+  "description": "A tiny deep-sea fishing score chase, built with Phaser 3.",
+  "publisher": "retro-reel",
+  "private": true,
+  "version": "1.2.0",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["game", "fishing", "phaser", "retro"],
+  "main": "./extension-dist/extension.js",
+  "activationEvents": [
+    "onCommand:retroReel.openGame",
+    "onView:retroReel.sidebar"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "retroReel",
+          "title": "Retro Reel",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "retroReel": [
+        {
+          "type": "webview",
+          "id": "retroReel.sidebar",
+          "name": "Fishing Deck"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "retroReel.openGame",
+        "title": "Retro Reel: Go Fishing",
+        "category": "Retro Reel"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "retroReel.openGame",
+          "when": "view == retroReel.sidebar",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build:web": "tsc && vite build",
+    "build:extension": "tsc -p tsconfig.extension.json && node scripts/extension-metadata.mjs",
+    "build": "npm run build:web && npm run build:extension",
+    "preview": "vite preview",
+    "package:vsix": "npm run build && vsce package --out retro-reel.vsix"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}

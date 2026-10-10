@@ -3,6 +3,7 @@
 .tmp-chrome/**
 node_modules/**
 src/**
+scripts/**
 *.vsix
 tsconfig.json
 tsconfig.extension.json

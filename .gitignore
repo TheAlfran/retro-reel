@@ -1,0 +1,16 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+extension-dist/
+*.vsix
+*.tsbuildinfo
+
+# Local tooling and temporary files
+.openai/
+.tmp-chrome/
+*.log
+
+# Local secrets
+.env
+.env.*
+!.env.example
