@@ -6,8 +6,11 @@ extension-dist/
 *.tsbuildinfo
 
 # Local tooling and temporary files
-.openai/
+.openai/*
+!.openai/hosting.json
 .tmp-chrome/
+hud-*-profile/
+hud-preview-*.png
 *.log
 
 # Local secrets

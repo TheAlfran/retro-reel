@@ -8,3 +8,6 @@ scripts/**
 tsconfig.json
 tsconfig.extension.json
 vite.config.*
+.openai/**
+hud-*-profile/**
+hud-preview-*.png

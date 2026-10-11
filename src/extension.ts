@@ -54,7 +54,7 @@ function getWebviewHtml(webview: vscode.Webview, distUri: vscode.Uri, sidebar: b
   const nonce = randomBytes(16).toString('base64');
 
   html = html.replace(
-    /(src|href)="\/([^"#]+)"/g,
+    /(src|href)="(?:\.\/|\/)([^"#]+)"/g,
     (_match: string, attribute: string, relativePath: string) => {
       const resource = vscode.Uri.joinPath(distUri, ...relativePath.split('/'));
       return `${attribute}="${webview.asWebviewUri(resource)}"`;

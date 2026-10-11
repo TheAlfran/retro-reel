@@ -1,13 +1,22 @@
 import Phaser from 'phaser';
+import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import './style.css';
 
 const SIDEBAR_MODE = document.body.classList.contains('vscode-sidebar');
 const W = SIDEBAR_MODE ? Math.max(280, Math.round(window.innerWidth)) : 960;
 const H = SIDEBAR_MODE ? Math.max(440, Math.round(window.innerHeight)) : 540;
-const WATER_Y = SIDEBAR_MODE ? Math.round(H * .23) : 150;
 const HUD_HEIGHT = SIDEBAR_MODE ? 130 : 96;
 const HUD_Y = H - HUD_HEIGHT;
+// Give the tropical background 55% of the scene above the controls in both layouts.
+// Retain enough sky for the boat in the shortest supported sidebar.
+const WATER_Y = Math.max(172, Math.round(HUD_Y * .55));
+const SEA_DEPTH = H - WATER_Y;
+const SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
 const AUTO_FISHING_DURATION = 10_000;
+// Keep the larger boat inside both the narrow sidebar and the sky area.
+const BOAT_SCALE = Math.min(1.8, (W - 32) / 156, (WATER_Y - 28) / 90);
+// Only the keel sits below the surface; the boat and crew remain vertically still.
+const BOAT_Y = WATER_Y - 22 * BOAT_SCALE;
 
 type HookState = 'idle' | 'dropping' | 'timing' | 'reeling';
 type PanelName = 'skills' | 'shop' | 'inventory' | 'character' | 'boat' | 'codex';
@@ -160,20 +169,27 @@ function saveProgress(progress: Progress): void {
 class ReelScene extends Phaser.Scene {
   private boat!: Phaser.GameObjects.Container;
   private boatArt!: Phaser.GameObjects.Graphics;
+  private starterBoat!: Phaser.GameObjects.Image;
+  private starterBoatSubmerged!: Phaser.GameObjects.Image;
+  private rod!: Phaser.GameObjects.Image;
+  private landedFish!: Phaser.GameObjects.Image;
+  private castElapsed = 0;
+  private castFrom = new Phaser.Math.Vector2();
+  private castTargetX = 0;
+  private reelElapsed = 0;
+  private reelFrom = new Phaser.Math.Vector2();
   private hook!: Phaser.GameObjects.Arc;
   private line!: Phaser.GameObjects.Graphics;
   private fish!: Phaser.GameObjects.Group;
   private waves!: Phaser.GameObjects.TileSprite;
+  private surfaceFoam!: Phaser.GameObjects.TileSprite;
+  private surfaceScroll = 0;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
-  private coinText!: Phaser.GameObjects.Text;
-  private levelText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
-  private streakText!: Phaser.GameObjects.Text;
   private castButtonText!: Phaser.GameObjects.Text;
-  private autoButton!: Phaser.GameObjects.Rectangle;
-  private autoButtonText!: Phaser.GameObjects.Text;
-  private codexText!: Phaser.GameObjects.Text;
+  private autoIndicator!: Phaser.GameObjects.Rectangle;
+  private profileStats?: Phaser.GameObjects.Text;
   private timingPanel!: Phaser.GameObjects.Container;
   private timingZone!: Phaser.GameObjects.Rectangle;
   private timingMarker!: Phaser.GameObjects.Arc;
@@ -203,6 +219,19 @@ class ReelScene extends Phaser.Scene {
 
   constructor() { super('reel'); }
 
+  preload(): void {
+    this.load.image('sky-backdrop', W / WATER_Y < 3
+      ? new URL('./assets/sky-backdrop-narrow.png', import.meta.url).href
+      : new URL('./assets/sky-backdrop-wide.png', import.meta.url).href);
+    this.load.image('starter-boat', new URL('./assets/starter-boat-v4.png', import.meta.url).href);
+    this.load.image('starter-captain', new URL('./assets/starter-captain.png', import.meta.url).href);
+    this.load.image('starter-rod', new URL('./assets/starter-rod.png', import.meta.url).href);
+    // Load only the composition suited to the available underwater viewport.
+    this.load.image('reef-backdrop', W / SEA_DEPTH < 1.5
+      ? new URL('./assets/reef-backdrop-tall.png', import.meta.url).href
+      : new URL('./assets/reef-backdrop-wide.png', import.meta.url).href);
+  }
+
   create(): void {
     this.createTextures();
     this.drawWorld();
@@ -211,6 +240,7 @@ class ReelScene extends Phaser.Scene {
     this.hook = this.add.circle(W / 2, WATER_Y + 5, 5, 0xf6dda0)
       .setStrokeStyle(2, 0x44312e).setDepth(10).setVisible(false);
     this.createBoat();
+    this.landedFish = this.add.image(0, 0, 'fish').setDepth(11).setVisible(false);
     this.createHud();
     this.createTimingPanel();
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -228,9 +258,12 @@ class ReelScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     const dt = Math.min(delta / 1000, .05);
     this.bobTime += dt;
-    this.waves.tilePositionX += 18 * dt;
-    this.boat.y = WATER_Y - 31 + Math.sin(this.bobTime * 2.2) * 2;
-
+    this.surfaceScroll = (this.surfaceScroll + 6 * dt) % 192;
+    // Slow opposing ripples shimmer around a steady waterline at the hull.
+    this.waves.tilePositionX = Math.floor(this.surfaceScroll);
+    this.waves.setAlpha(.96 + Math.sin(this.bobTime * .7) * .02);
+    this.surfaceFoam.tilePositionX = -Math.floor(this.bobTime * 3) % 192;
+    this.surfaceFoam.setAlpha(.5 + Math.sin(this.bobTime * .9) * .15);
     if (!this.profileReady) {
       this.updateFish(dt);
       this.updateLine();
@@ -257,38 +290,122 @@ class ReelScene extends Phaser.Scene {
     const g = this.add.graphics();
     g.fillStyle(0xffffff).fillEllipse(19, 10, 30, 13).fillTriangle(5, 10, 0, 3, 0, 17);
     g.fillCircle(25, 8, 2).generateTexture('fish', 38, 20).clear();
-    g.fillStyle(0xffffff).fillCircle(4, 4, 4).generateTexture('bubble', 8, 8).destroy();
+    g.fillStyle(0xffffff).fillCircle(4, 4, 4).generateTexture('bubble', 8, 8).clear();
+
+    // White, shallow crests make the gentle drift visible without a large swell.
+    g.fillStyle(0xffffff, .98).fillRect(0, 3, 192, 2);
+    g.fillStyle(0xf5fdff, .85)
+      .fillRect(8, 2, 28, 1).fillRect(66, 2, 38, 1).fillRect(143, 2, 24, 1);
+    g.fillStyle(0xd7f6ff, .55)
+      .fillRect(24, 5, 30, 1).fillRect(92, 5, 23, 1).fillRect(151, 5, 32, 1);
+    g.generateTexture('surface-line', 192, 8).clear();
+    g.fillStyle(0xffffff)
+      .fillRect(16, 1, 15, 1).fillRect(78, 2, 22, 1).fillRect(148, 1, 18, 1)
+      .fillRect(41, 5, 19, 1).fillRect(112, 6, 14, 1).fillRect(171, 5, 12, 1);
+    g.generateTexture('surface-foam', 192, 8).destroy();
   }
 
   private drawWorld(): void {
     const world = this.add.graphics();
-    world.fillGradientStyle(0xf7b267, 0xf7b267, 0xfbd1a2, 0xfbd1a2).fillRect(0, 0, W, WATER_Y + 8);
-    world.fillStyle(0xffe5a8, .85).fillCircle(W * .82, 58, 32);
-    world.fillStyle(0x082d3d, .22)
-      .fillTriangle(0, WATER_Y, W * .18, 56, W * .35, WATER_Y)
-      .fillTriangle(W * .25, WATER_Y, W * .48, 72, W * .66, WATER_Y);
-    for (let i = 0; i < 6; i++) {
-      world.fillStyle(0xffffff, .16).fillEllipse(55 + i * (W / 5.3), 43 + (i % 2) * 24, 78, 9);
-    }
-    world.fillGradientStyle(0x158fa4, 0x158fa4, 0x06384d, 0x06384d)
-      .fillRect(0, WATER_Y, W, HUD_Y - WATER_Y);
-    for (let y = WATER_Y + 38; y < HUD_Y; y += 45) {
-      world.lineStyle(2, 0x59c1be, Math.max(.05, .26 - y / 1900));
-      for (let x = y % 88; x < W; x += 105) world.lineBetween(x, y, x + 42, y);
-    }
-    this.waves = this.add.tileSprite(W / 2, WATER_Y, W, 22, 'bubble').setTint(0x9de0d1).setAlpha(.4);
-    this.add.rectangle(W / 2, HUD_Y - 8, W, 18, 0x062b39, .7);
+    this.drawSky();
+    // Keep the reference's bright blue water through the pale, hazy seabed.
+    world.fillGradientStyle(0x498df6, 0x498df6, 0x639ff5, 0x639ff5)
+      .fillRect(0, WATER_Y, W, SEA_DEPTH);
+    this.drawReef();
+    this.waves = this.add.tileSprite(W / 2, WATER_Y, W, 8, 'surface-line')
+      // Draw the bright waterline over the hull to make the boat feel partially submerged.
+      .setDepth(13).setAlpha(.96);
+    this.surfaceFoam = this.add.tileSprite(W / 2, WATER_Y, W, 8, 'surface-foam')
+      .setDepth(13).setAlpha(.5);
     this.add.particles(0, 0, 'bubble', {
-      x: { min: 20, max: W - 20 }, y: HUD_Y - 5,
+      x: { min: 20, max: W - 20 }, y: SEABED_Y,
       lifespan: { min: 4200, max: 7500 }, speedY: { min: -14, max: -31 },
-      scale: { start: .48, end: .12 }, alpha: { start: .2, end: 0 },
-      frequency: 330, tint: 0xa5ede5,
-    });
+      scale: { start: .34, end: .08 }, alpha: { start: .1, end: 0 },
+      frequency: 520, tint: 0xd5efff,
+    }).setDepth(4);
+  }
+
+  private drawSky(): void {
+    const skyTexture = this.textures.get('sky-backdrop');
+    skyTexture.setFilter(Phaser.Textures.FilterMode.NEAREST);
+    const skyFrame = this.textures.getFrame('sky-backdrop')!;
+    const skyScale = W / skyFrame.width;
+    if (W / WATER_Y >= 3) {
+      // Excess sky in wide views extends above the canvas and is naturally clipped.
+      this.add.image(W / 2, WATER_Y, 'sky-backdrop').setOrigin(.5, 1).setScale(skyScale);
+      return;
+    }
+
+    // These boundaries follow cloud-free rows in the narrow artwork. Add tall-view
+    // space only between clouds; cloud banks, islands and palms keep their shape.
+    const bands = [0, .12, .25, .30, .40, .42, .84, 1]
+      .map(fraction => Math.round(skyFrame.height * fraction));
+    const extraSkyWeights = [.3, 0, .4, 0, .3, 0, 0];
+    const seaExtra = SIDEBAR_MODE ? (skyFrame.height - bands[6]) * skyScale * .35 : 0;
+    const backdropHeight = skyFrame.height * skyScale + seaExtra;
+    const extraSky = Math.max(0, WATER_Y - backdropHeight);
+    let y = WATER_Y - backdropHeight - extraSky;
+    for (let i = 0; i < bands.length - 1; i++) {
+      const sourceY = bands[i];
+      const sourceHeight = bands[i + 1] - sourceY;
+      const height = sourceHeight * skyScale + extraSky * extraSkyWeights[i]
+        + (i === bands.length - 2 ? seaExtra : 0);
+      const top = Math.round(y);
+      const bottom = Math.round(y + height);
+      // Separate frames place every edge on an exact pixel, avoiding crop seams.
+      const frameName = `sky-band-${i}`;
+      if (!skyTexture.has(frameName)) {
+        skyTexture.add(frameName, 0, 0, sourceY, skyFrame.width, sourceHeight);
+      }
+      this.add.image(0, top, 'sky-backdrop', frameName).setOrigin(0)
+        .setDisplaySize(W, bottom - top);
+      y += height;
+    }
+  }
+
+  private drawReef(): void {
+    // A single atmospheric scene embeds the corals in the seabed instead of
+    // presenting separate, collectible-looking plant sprites.
+    this.textures.get('reef-backdrop').setFilter(Phaser.Textures.FilterMode.NEAREST);
+    this.add.image(0, WATER_Y, 'reef-backdrop').setOrigin(0)
+      .setDisplaySize(W, SEA_DEPTH).setDepth(1);
   }
 
   private createBoat(): void {
+    for (const key of ['starter-boat', 'starter-captain', 'starter-rod']) {
+      this.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
+    }
     this.boatArt = this.add.graphics();
-    this.boat = this.add.container(W / 2, WATER_Y - 31, [this.boatArt]).setDepth(12);
+    const boatFrame = this.textures.getFrame('starter-boat')!;
+    const boatWidth = 144;
+    const boatHeight = boatWidth * boatFrame.height / boatFrame.width;
+    const boatBottom = 31;
+    const boatTop = boatBottom - boatHeight;
+    const makeBoatLayer = () => this.add.image(0, boatBottom, 'starter-boat')
+      .setOrigin(.5, 1).setDisplaySize(boatWidth, boatHeight);
+    this.starterBoat = makeBoatLayer();
+
+    // The near gunwale starts 69% down this sprite. Only that foreground section
+    // overlaps the crew; the far rail, crate and mast stay behind them.
+    const railTop = Math.round(boatFrame.height * .69);
+    const foregroundHull = makeBoatLayer()
+      .setCrop(0, railTop, boatFrame.width, boatFrame.height - railTop);
+
+    // A filled tint blends the sea color over the wood instead of multiplying it
+    // into a darker brown. Texture alpha confines the wash to the hull silhouette.
+    const localWaterline = (WATER_Y - BOAT_Y) / BOAT_SCALE;
+    const cropTop = Math.round(boatFrame.height * (localWaterline - boatTop) / boatHeight);
+    this.starterBoatSubmerged = makeBoatLayer()
+      .setTintFill(0x498df6).setAlpha(.72)
+      .setCrop(0, cropTop, boatFrame.width, boatFrame.height - cropTop);
+    // The torso ends at 87% of the padded captain image. Bury that edge below the
+    // near rail while keeping the head, shoulders and rod hand above it.
+    const captain = this.add.image(22, 14, 'starter-captain').setOrigin(.5, .87).setDisplaySize(28, 29);
+    this.rod = this.add.image(26, 11.8, 'starter-rod').setOrigin(.27, .83).setDisplaySize(22, 41);
+    this.boat = this.add.container(W / 2, BOAT_Y, [
+      this.starterBoat, this.rod, captain, foregroundHull, this.boatArt, this.starterBoatSubmerged,
+    ])
+      .setScale(BOAT_SCALE).setDepth(12);
     this.paintBoat();
   }
 
@@ -296,87 +413,94 @@ class ReelScene extends Phaser.Scene {
     const tier = Phaser.Math.Clamp(this.progress.hullLevel, 1, BOATS.length);
     const boat = BOATS[tier - 1];
     const art = this.boatArt.clear();
-    art.fillStyle(boat.hull).fillTriangle(-58, 4, 58, 4, 38, 27).fillRect(-38, 4, 76, 23);
-    art.fillStyle(boat.trim).fillRect(-51, 0, 102, 8);
-    if (tier >= 2) art.fillStyle(0xffdf9d, .8).fillRect(-30, 14, 60, 3);
-    if (tier >= 3) art.fillStyle(0x15394b).fillRect(-56, 21, 14, 7).fillCircle(-58, 24, 5);
-    art.fillStyle(0xffdf9d).fillRect(-20, -25, 42, 25);
-    art.fillStyle(tier >= 4 ? boat.trim : 0x173746).fillRect(-12, -19, 13, 12);
-    art.fillStyle(0xffdf9d).fillRect(7, -19, 9, 12);
-    art.fillStyle(0xe9b46d).fillRect(-4, -42, 4, 18).fillTriangle(-2, -41, 26, -31, -2, -25);
-    if (tier >= 4) art.fillStyle(boat.trim, .85).fillRect(-24, -29, 50, 3);
-    if (tier >= 5) art.lineStyle(2, 0x7cf1db).lineBetween(-15, -27, -28, -48).strokeCircle(-29, -50, 3);
-    if (tier >= 6) art.fillStyle(0x9d91ff).fillCircle(-29, -50, 4).fillCircle(-42, -8, 3);
-    if (tier >= 7) art.fillStyle(0xffef91, .9).fillCircle(-42, 7, 3).fillCircle(43, 7, 3);
-    art.fillStyle(0xf3c59f).fillCircle(30, -30, 6);
-    art.fillStyle(0xf4c34f).fillRect(22, -38, 17, 3).fillTriangle(25, -39, 30, -45, 36, -39);
-    art.fillStyle(0x21445a).fillRect(25, -24, 11, 18);
-    art.fillStyle(0xf3c59f).fillRect(34, -23, 11, 3);
-    art.fillStyle(0x152f3d).fillRect(26, -7, 4, 9).fillRect(33, -7, 4, 9);
-    art.lineStyle(2, 0x3b2828).lineBetween(43, -22, 58, -43);
-    art.lineStyle(3, 0x3b2828).lineBetween(58, -43, 65, -3);
+    this.starterBoat.setVisible(true).clearTint();
+    if (tier === 1) return;
+    // Overlay upgrade fittings on the illustrated hull instead of replacing it.
+    art.fillStyle(boat.trim, .9).fillRoundedRect(-33, 18, 68, 2, 1);
+    if (tier >= 3) art.fillStyle(0x15394b).fillRoundedRect(-56, 11, 8, 12, 2).fillCircle(-55, 25, 3);
+    if (tier >= 4) {
+      art.lineStyle(1.5, 0x79513c).lineBetween(-42, 10, -42, -26);
+      art.fillStyle(boat.trim).fillTriangle(-42, -26, -29, -21, -42, -16);
+    }
+    if (tier >= 5) art.lineStyle(1.5, 0x7cf1db).lineBetween(-14, 10, -17, -37).strokeCircle(-17, -39, 3);
+    if (tier >= 6) art.fillStyle(0x9d91ff).fillCircle(-17, -39, 2).fillCircle(-49, 12, 2);
+    if (tier >= 7) art.fillStyle(0xffef91, .9).fillCircle(-41, 16, 2).fillCircle(42, 16, 2);
   }
 
   private createHud(): void {
-    this.add.rectangle(W / 2, HUD_Y + HUD_HEIGHT / 2, W, HUD_HEIGHT, 0x041722, .98)
-      .setStrokeStyle(2, 0xffdf9d, .6).setDepth(20);
-    this.coinText = this.add.text(14, HUD_Y + 11, '', {
-      fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '11px' : '13px', color: '#ffdf9d',
-    }).setDepth(22);
-    this.levelText = this.add.text(14, HUD_Y + 31, '', {
-      fontFamily: 'DM Mono', fontSize: '10px', color: '#78c5c0',
-    }).setDepth(22);
     this.statusText = this.add.text(W / 2, HUD_Y - 22, '', {
       fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '9px' : '12px', color: '#fff1be',
       backgroundColor: '#082b3b', padding: { x: 9, y: 5 },
+      wordWrap: { width: W - 44 }, align: 'center',
     }).setOrigin(.5).setDepth(23).setAlpha(0);
-    this.streakText = this.add.text(W - 14, HUD_Y + 12, '', {
-      fontFamily: 'DM Mono', fontSize: '10px', color: '#f7b267', align: 'right',
-    }).setOrigin(1, 0).setDepth(22).setVisible(!SIDEBAR_MODE);
+    const size = 44;
+    const edge = 12;
+    const top = edge + size / 2;
+    const step = size + 10;
+    // Small utility buttons leave the center and bottom of the scene open.
+    (['inventory', 'shop', 'codex'] as const).forEach((panel, index) => {
+      this.createHudIcon(edge + size / 2, top + index * step, size, panel);
+    });
+    (['character', 'skills', 'boat'] as const).forEach((panel, index) => {
+      this.createHudIcon(W - edge - size / 2, top + index * step, size, panel);
+    });
+    this.createHudIcon(W - edge - size / 2 - step, top, size, 'cast');
+  }
 
-    const castWidth = SIDEBAR_MODE ? 100 : 184;
-    const castX = SIDEBAR_MODE ? 72 : W / 2;
-    const controlY = HUD_Y + (SIDEBAR_MODE ? 58 : 26);
-    const castButton = this.add.rectangle(castX, controlY, castWidth, 36, 0xd4513f)
-      .setStrokeStyle(2, 0xffdf9d).setDepth(22).setInteractive({ useHandCursor: true });
-    this.castButtonText = this.add.text(castX, controlY, 'CAST LINE', {
-      fontFamily: 'Rubik Mono One', fontSize: SIDEBAR_MODE ? '9px' : '12px', color: '#fff1be',
-    }).setOrigin(.5).setDepth(23);
-    castButton.on('pointerdown', () => this.handleFishingAction());
-    castButton.on('pointerover', () => castButton.setFillStyle(0xe7674f));
-    castButton.on('pointerout', () => castButton.setFillStyle(0xd4513f));
-
-    const autoX = SIDEBAR_MODE ? W - 62 : W / 2 + 178;
-    this.autoButton = this.add.rectangle(autoX, controlY, SIDEBAR_MODE ? 100 : 128, 36, 0x123747)
-      .setStrokeStyle(2, 0x4d7a83).setDepth(22).setInteractive({ useHandCursor: true });
-    this.autoButtonText = this.add.text(autoX, controlY, 'AUTO: OFF', {
-      fontFamily: 'DM Mono', fontStyle: 'bold', fontSize: SIDEBAR_MODE ? '9px' : '11px', color: '#91b8bb',
-    }).setOrigin(.5).setDepth(23);
-    this.autoButton.on('pointerdown', () => this.toggleAutoFishing());
-
-    const codexButton = this.add.rectangle(W - 62, 26, 108, 34, 0x082b3b, .92)
-      .setStrokeStyle(2, 0xffdf9d, .8).setDepth(22).setInteractive({ useHandCursor: true });
-    this.codexText = this.add.text(W - 62, 26, 'FISH 0/20', {
-      fontFamily: 'DM Mono', fontStyle: 'bold', fontSize: SIDEBAR_MODE ? '9px' : '11px', color: '#ffdf9d',
-    }).setOrigin(.5).setDepth(23);
-    codexButton.on('pointerdown', () => this.openPanel('codex'));
-    codexButton.on('pointerover', () => codexButton.setFillStyle(0x124355));
-    codexButton.on('pointerout', () => codexButton.setFillStyle(0x082b3b, .92));
-
-    const tabs: Array<[PanelName, string]> = [
-      ['skills', 'SKILLS'], ['shop', 'SHOP'], ['inventory', 'INVENTORY'], ['character', 'CHARACTER'], ['boat', 'BOAT'],
-    ];
-    const tabWidth = W / tabs.length;
-    tabs.forEach(([panel, label], index) => {
-      const x = tabWidth * index + tabWidth / 2;
-      const button = this.add.rectangle(x, H - 19, tabWidth - 3, 34, 0x092936)
-        .setStrokeStyle(1, 0x315b63).setDepth(22).setInteractive({ useHandCursor: true });
-      this.add.text(x, H - 19, label, {
-        fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '7px' : '10px', color: '#a9d5d3',
-      }).setOrigin(.5).setDepth(23);
-      button.on('pointerdown', () => this.openPanel(panel));
-      button.on('pointerover', () => button.setFillStyle(0x124355));
-      button.on('pointerout', () => button.setFillStyle(0x092936));
+  private createHudIcon(x: number, y: number, size: number, panel: PanelName | 'cast'): void {
+    const frame = this.add.graphics();
+    const icon = this.add.graphics();
+    const half = size / 2;
+    const drawFrame = (hover = false, pressed = false): void => {
+      frame.clear();
+      const box = (inset: number, color: number, offsetY = 0): void => {
+        const width = size - inset * 2;
+        frame.fillStyle(color)
+          .fillRect(-half + inset + 2, -half + inset + offsetY, width - 4, width)
+          .fillRect(-half + inset, -half + inset + 2 + offsetY, width, width - 4);
+      };
+      box(0, 0x243039, 3);
+      box(0, 0x243039);
+      box(2, pressed ? 0xb7c1c1 : hover ? 0xf8faf2 : 0xdce2dd);
+      frame.fillStyle(pressed ? 0x9ca8aa : 0xffffff)
+        .fillRect(-half + 4, -half + 2, size - 8, 2)
+        .fillRect(-half + 2, -half + 4, 2, size - 8);
+      frame.fillStyle(0x9ca8aa)
+        .fillRect(-half + 4, half - 4, size - 8, 2)
+        .fillRect(half - 4, -half + 4, 2, size - 8);
+    };
+    drawFrame();
+    const pixel = 2;
+    HUD_ICONS[panel].forEach((row, rowIndex) => {
+      [...row].forEach((color, column) => {
+        if (color === '.') return;
+        icon.fillStyle(HUD_PALETTE[color]).fillRect(
+          (column - 8) * pixel, (rowIndex - 8) * pixel, pixel, pixel,
+        );
+      });
+    });
+    const button = this.add.container(x, y, [frame, icon]).setDepth(22).setSize(size, size)
+      .setName(panel).setInteractive({ useHandCursor: true });
+    const tooltip = panel === 'character' ? 'PROFILE' : panel === 'cast' ? 'CAST / REEL [SPACE]'
+      : panel === 'codex' ? 'FISH COLLECTION' : panel.toUpperCase();
+    const label = this.add.text(x < W / 2 ? x - half : x + half, y + half + 8, tooltip, {
+      fontFamily: 'DM Mono', fontSize: '10px', color: '#fff1be',
+      backgroundColor: '#102c3b', padding: { x: 8, y: 6 },
+    }).setOrigin(x < W / 2 ? 0 : 1, 0).setDepth(25).setVisible(false);
+    if (panel === 'cast') this.castButtonText = label;
+    if (panel === 'character') {
+      this.autoIndicator = this.add.rectangle(half - 3, half - 3, 8, 8, 0x60d394)
+        .setStrokeStyle(2, 0x243039).setVisible(false);
+      button.add(this.autoIndicator);
+    }
+    button.on('pointerover', () => { drawFrame(true); label.setVisible(!this.activePanel); });
+    button.on('pointerout', () => { drawFrame(); icon.y = 0; label.setVisible(false); });
+    button.on('pointerdown', () => { drawFrame(true, true); icon.y = 2; });
+    button.on('pointerup', () => {
+      drawFrame(); icon.y = 0; label.setVisible(false);
+      if (!this.profileReady || this.activePanel) return;
+      if (panel === 'cast') this.handleFishingAction();
+      else this.openPanel(panel);
     });
   }
 
@@ -399,7 +523,8 @@ class ReelScene extends Phaser.Scene {
     let move = 0;
     if (this.cursors.left.isDown || this.keys.A.isDown) move--;
     if (this.cursors.right.isDown || this.keys.D.isDown) move++;
-    this.boat.x = Phaser.Math.Clamp(this.boat.x + move * 170 * dt, 72, W - 72);
+    const edge = 78 * BOAT_SCALE;
+    this.boat.x = Phaser.Math.Clamp(this.boat.x + move * 170 * dt, edge, W - edge);
   }
 
   private handleFishingAction(): void {
@@ -440,8 +565,11 @@ class ReelScene extends Phaser.Scene {
     this.automaticCast = this.autoFishing;
     this.hookState = 'dropping';
     // Fishing happens at the surface; the swimming fish remain ambient scenery.
-    this.hookTargetY = Phaser.Math.Between(WATER_Y + 24, WATER_Y + 42);
-    this.hook.setPosition(this.boat.x + 64, WATER_Y + 3).setVisible(true);
+    this.hookTargetY = WATER_Y + 3;
+    this.castElapsed = 0;
+    this.castFrom.copy(this.rodTip());
+    this.castTargetX = Phaser.Math.Clamp(this.boat.x + 95 * BOAT_SCALE, 16, W - 16);
+    this.hook.setPosition(this.castFrom.x, this.castFrom.y).setVisible(true);
     this.castButtonText.setText('DROPPING…');
     this.flashStatus(
       receivedRelief ? 'DOCKMASTER RELIEF — 3 FREE WORMS' : this.autoFishing ? 'AUTO CAST DEPLOYED' : 'LINE DROPPING…',
@@ -452,10 +580,17 @@ class ReelScene extends Phaser.Scene {
   private updateHook(time: number, dt: number): void {
     if (this.hookState === 'idle') return;
     if (this.hookState === 'dropping') {
-      this.hook.y += 210 * dt;
-      if (this.hook.y >= this.hookTargetY) this.beginTiming(time);
+      this.castElapsed += dt;
+      const p = Math.min(1, this.castElapsed / .65);
+      this.rod.setAngle(-18 * Math.sin(p * Math.PI));
+      this.hook.setPosition(
+        Phaser.Math.Linear(this.castFrom.x, this.castTargetX, p),
+        Phaser.Math.Linear(this.castFrom.y, this.hookTargetY, p) - Math.sin(p * Math.PI) * 30,
+      );
+      if (p === 1) this.beginTiming(time);
     } else if (this.hookState === 'timing') {
-      this.hook.y += Math.sin(this.bobTime * 3) * 5 * dt;
+      this.hook.y = this.hookTargetY + Math.sin(this.bobTime * 3) * 2;
+      this.rod.setAngle(3 + Math.sin(this.bobTime * 3) * 1.5);
       if (this.automaticCast) {
         this.updateAutoProgress(time);
         if (time >= this.autoResolveAt) this.resolveAutoCatch();
@@ -467,8 +602,15 @@ class ReelScene extends Phaser.Scene {
         this.positionTimingPieces();
       }
     } else if (this.hookState === 'reeling') {
-      this.hook.y -= 270 * dt;
-      if (this.hook.y <= WATER_Y + 5) this.finishReel();
+      this.reelElapsed += dt;
+      const p = Math.min(1, this.reelElapsed / .9);
+      this.rod.setAngle(-10 * Math.sin(p * Math.PI));
+      const tip = this.rodTip();
+      this.hook.setPosition(Phaser.Math.Linear(this.reelFrom.x, tip.x, p),
+        Phaser.Math.Linear(this.reelFrom.y, tip.y, p) - Math.sin(p * Math.PI) * 12);
+      this.landedFish.setPosition(this.hook.x, this.hook.y + 10).setAngle(Math.sin(p * 22) * 18);
+      this.castButtonText.setText(`REEL ${Math.round(p * 100)}%`);
+      if (p === 1) this.finishReel();
     }
   }
 
@@ -527,9 +669,13 @@ class ReelScene extends Phaser.Scene {
     if (this.hookState !== 'timing') return;
     this.timingPanel.setVisible(false);
     this.hookState = 'reeling';
+    this.reelElapsed = 0;
+    this.reelFrom.set(this.hook.x, this.hook.y);
     this.castButtonText.setText('REELING…');
     if (success) {
       this.lastCatch = this.rollCatch(automatic);
+      this.landedFish.setPosition(this.hook.x, this.hook.y + 10)
+        .setTint(Phaser.Display.Color.HexStringToColor(this.lastCatch.color).color).setVisible(true);
       this.streak++;
       this.progress.bestStreak = Math.max(this.progress.bestStreak, this.streak);
       this.flashStatus(`${automatic ? 'AUTO • ' : ''}${this.lastCatch.name} ON THE LINE!`, this.lastCatch.color);
@@ -544,7 +690,9 @@ class ReelScene extends Phaser.Scene {
     this.hookState = 'idle';
     this.automaticCast = false;
     this.hook.setVisible(false);
-    this.castButtonText.setText('CAST LINE');
+    this.landedFish.setVisible(false);
+    this.rod.setAngle(0);
+    this.castButtonText.setText('CAST / REEL [SPACE]');
     if (this.lastCatch) {
       const result = this.lastCatch;
       this.progress.coins += result.value;
@@ -602,10 +750,7 @@ class ReelScene extends Phaser.Scene {
 
   private toggleAutoFishing(): void {
     this.autoFishing = !this.autoFishing;
-    this.autoButton.setFillStyle(this.autoFishing ? 0x17664f : 0x123747)
-      .setStrokeStyle(2, this.autoFishing ? 0x60d394 : 0x4d7a83);
-    this.autoButtonText.setText(this.autoFishing ? 'AUTO: ON' : 'AUTO: OFF')
-      .setColor(this.autoFishing ? '#bff5d4' : '#91b8bb');
+    this.autoIndicator.setVisible(this.autoFishing);
     if (this.autoFishing) {
       this.nextAutoCastAt = this.time.now + 350;
       this.flashStatus('AUTO FISHING ENABLED', '#60d394');
@@ -614,11 +759,25 @@ class ReelScene extends Phaser.Scene {
     }
   }
 
+  private rodTip(): Phaser.Math.Vector2 {
+    // Transform the actual visible tip, including grip rotation and boat scaling.
+    const point = new Phaser.Math.Vector2();
+    this.rod.getWorldTransformMatrix().transformPoint(
+      (.95 - .27) * this.rod.width, (.02 - .83) * this.rod.height, point,
+    );
+    return point;
+  }
+
   private updateLine(): void {
     this.line.clear();
     if (this.hookState !== 'idle') {
-      this.line.lineStyle(2, 0xeef1cc, .9)
-        .lineBetween(this.boat.x + 64, this.boat.y - 42, this.hook.x, this.hook.y);
+      const tip = this.rodTip();
+      this.line.lineStyle(1.4, 0xeef1cc, .9).lineBetween(tip.x, tip.y, this.hook.x, this.hook.y);
+      if (this.hookState === 'timing') {
+        const pulse = (this.bobTime * .8) % 1;
+        this.line.lineStyle(1.5, 0xc1eee4, 1 - pulse)
+          .strokeEllipse(this.hook.x, WATER_Y + 5, 12 + pulse * 30, 3 + pulse * 8);
+      }
     }
   }
 
@@ -637,7 +796,7 @@ class ReelScene extends Phaser.Scene {
 
   private spawnFish(initial = false): void {
     const direction: 1 | -1 = Math.random() > .5 ? 1 : -1;
-    const y = Phaser.Math.Between(WATER_Y + 46, Math.max(WATER_Y + 55, HUD_Y - 36));
+    const y = Phaser.Math.Between(WATER_Y + 46, Math.max(WATER_Y + 55, SEABED_Y - 25));
     const fish = this.add.sprite(
       initial ? Phaser.Math.Between(20, W - 20) : (direction === 1 ? -35 : W + 35), y, 'fish',
     );
@@ -653,14 +812,14 @@ class ReelScene extends Phaser.Scene {
 
   private openPanel(name: PanelName): void {
     this.closePanel();
-    const largePanel = name === 'skills' || name === 'shop' || name === 'inventory' || name === 'codex';
+    const largePanel = name === 'character' || name === 'skills' || name === 'shop' || name === 'inventory' || name === 'codex';
     const panelWidth = Math.min(largePanel ? 760 : 620, W - 24);
     const panelHeight = Math.min(largePanel ? 410 : 330, HUD_Y - 16);
     const cx = W / 2;
     const cy = (HUD_Y + 8) / 2;
-    const shade = this.add.rectangle(W / 2, HUD_Y / 2, W, HUD_Y, 0x021019, .72);
+    const shade = this.add.rectangle(W / 2, HUD_Y / 2, W, HUD_Y, 0x021019, .72).setInteractive();
     const card = this.add.rectangle(cx, cy, panelWidth, panelHeight, 0x082b3b, .98).setStrokeStyle(3, 0xffdf9d);
-    const title = this.add.text(cx - panelWidth / 2 + 22, cy - panelHeight / 2 + 18, name.toUpperCase(), {
+    const title = this.add.text(cx - panelWidth / 2 + 22, cy - panelHeight / 2 + 18, name === 'character' ? 'PROFILE' : name.toUpperCase(), {
       fontFamily: 'Rubik Mono One', fontSize: SIDEBAR_MODE ? '15px' : '22px', color: '#ffdf9d',
     });
     const close = this.makeButton(cx + panelWidth / 2 - 34, cy - panelHeight / 2 + 28, 42, 30, 'X', () => this.closePanel());
@@ -877,15 +1036,19 @@ class ReelScene extends Phaser.Scene {
   }
 
   private populateCharacterPanel(cx: number, cy: number, width: number, height: number): void {
-    const left = cx - width / 2 + 28;
-    const needed = this.progress.level * 100;
-    this.addPanelText(left, cy - height / 2 + 70, this.progress.captainName.toUpperCase(), '#fff1be', 16);
-    this.addPanelText(left, cy - height / 2 + 106, `LEVEL          ${this.progress.level}`, '#87cbd0', 12);
-    this.addPanelText(left, cy - height / 2 + 136, `XP             ${this.progress.xp} / ${needed}`, '#87cbd0', 12);
-    this.addPanelText(left, cy - height / 2 + 166, `TOTAL CATCHES  ${this.progress.catches}`, '#87cbd0', 12);
-    this.addPanelText(left, cy - height / 2 + 196, `BEST STREAK    ${this.progress.bestStreak}`, '#87cbd0', 12);
-    this.addPanelText(left, cy - height / 2 + 226, `ROD            ${RODS[this.progress.rodLevel - 1].name}`, '#d5b67b', 10);
-    this.addPanelText(left, cy - height / 2 + 248, `BAIT           ${BAITS[this.progress.selectedBait].name}`, '#d5b67b', 10);
+    const left = cx - width / 2 + 22;
+    const top = cy - height / 2;
+    this.profileStats = this.add.text(left, top + 60, '', {
+      fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '10px' : '12px', color: '#dce2dd',
+      lineSpacing: SIDEBAR_MODE ? 7 : 9, wordWrap: { width: width - 44 },
+    });
+    this.activePanel!.add(this.profileStats);
+    this.activePanel!.add(this.makeButton(cx, top + height - 30, Math.min(220, width - 44), 34,
+      this.autoFishing ? 'AUTO FISHING: ON' : 'AUTO FISHING: OFF', () => {
+        this.toggleAutoFishing();
+        this.openPanel('character');
+      }));
+    this.updateHud();
   }
 
   private populateBoatPanel(cx: number, cy: number, width: number, height: number): void {
@@ -941,6 +1104,7 @@ class ReelScene extends Phaser.Scene {
   private closePanel(): void {
     this.activePanel?.destroy(true);
     this.activePanel = undefined;
+    this.profileStats = undefined;
   }
 
   private spendCoins(amount: number): boolean {
@@ -956,12 +1120,18 @@ class ReelScene extends Phaser.Scene {
     const bait = BAITS[this.progress.selectedBait];
     const stock = this.progress.baitStock[this.progress.selectedBait] ?? 0;
     this.progress.bait = stock;
-    this.coinText.setText(`◈ ${this.progress.coins}  •  ${bait.name.toUpperCase()} ${stock}`);
-    const name = this.progress.captainName || 'CAPTAIN';
-    this.levelText.setText(`${name.toUpperCase()}  LV.${this.progress.level}  XP ${this.progress.xp}/${this.progress.level * 100}`);
-    this.streakText.setText(`STREAK ${this.streak}\nBEST ${this.progress.bestStreak}`);
     const discovered = FISH.filter(fish => (this.progress.fishInventory[fish.id] ?? 0) > 0).length;
-    this.codexText.setText(`FISH ${discovered}/20`);
+    this.profileStats?.setText([
+      `${(this.progress.captainName || 'CAPTAIN').toUpperCase()}  /  LV.${this.progress.level}`,
+      `XP ${this.progress.xp}/${this.progress.level * 100}   COINS ${this.progress.coins}`,
+      `CATCHES ${this.progress.catches}   FISH ${discovered}/${FISH.length}`,
+      `STREAK ${this.streak}   BEST ${this.progress.bestStreak}`,
+      `SKILL POINTS ${this.progress.skillPoints}`,
+      `ROD  ${RODS[this.progress.rodLevel - 1].name}`,
+      `BAIT ${bait.name} (${stock})`,
+      `BOAT ${BOATS[this.progress.hullLevel - 1].name}`,
+    ].join('\n'));
+
   }
 
   private flashStatus(message: string, color: string): void {
@@ -976,9 +1146,12 @@ const game = new Phaser.Game({
   parent: 'game',
   width: W,
   height: H,
-  backgroundColor: '#0c7d94',
+  backgroundColor: '#498df6',
   pixelArt: true,
   antialias: false,
+  render: { roundPixels: true },
+  // Direct image loads respect the webview's existing img-src policy.
+  loader: { imageLoadType: 'HTMLImageElement' },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: ReelScene,
 });

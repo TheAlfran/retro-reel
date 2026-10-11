@@ -1,0 +1,9 @@
+# Open-deck boat
+
+`starter-boat-v4.png` was generated using the built-in image tool. The supplied ship screenshot was used as a visual reference. Earlier boat assets are retained.
+
+The game preserves the image aspect ratio, renders a second copy cropped at 69% of image height as the foreground rail/hull, and places the fisherman between these layers. A filled sea-color overlay is cropped at the world waterline. Boat and captain do not bob.
+
+## Generation prompt
+
+Use case: stylized-concept. Asset: transparent pixel-art fishing boat sprite for a side-view game. Use the SECOND attached image (large wooden ship) as visual inspiration, not the first small red-roof boat. Create a single original compact wooden fishing vessel, side elevation, bow pointing right. Warm dark brown plank hull, thin golden oak gunwale, three small dark square hull windows, raised wooden stern on LEFT with small helm and railing, one short bare mast toward the LEFT, ropes and a small crate left of center. RIGHT HALF must be an empty open fishing deck with low rail where we will place a separate fisherman character. No cabin obscuring the right deck. No characters, no rod, no sails, no water, no background, no UI, no text. Crisp chunky 16-bit pixel art with flat limited palette and dark outlines, no gradients or realistic textures. Wide compact silhouette, around 2.2 times wider than tall, tight transparent margin. Key production layout: the straight near-side horizontal gunwale is at about 66 percent down the opaque boat bounds; lower hull beneath it is about one-third of the boat height. Keep right-half background open above this low horizontal gunwale; rear rail lower than a standing fisherman's torso. Entire vessel including keel visible, actual transparent PNG background. It should resemble a small wooden adventure fishing ship scaled for a 200px-wide game view.
