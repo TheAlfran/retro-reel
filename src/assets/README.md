@@ -16,6 +16,12 @@ Use case: stylized-concept. Asset type: transparent PNG sprite for Retro Reel, a
 
 ## Generation prompts
 
+### ambient-fish-sprites.png
+
+Built-in image generation; final prompt:
+
+Use case: stylized-concept. Asset type: transparent sprite sheet for a cozy 2D pixel-art fishing game. Create three distinct underwater fish sprites in one horizontal sprite sheet: a small round reef fish, a medium classic fish, and a long slender deep-sea fish. Fully transparent background, no water or scenery. Crisp chunky pixel art, strict side view facing right, dark navy pixel outline, limited muted tropical palette. Three fish evenly spaced in one horizontal row, each isolated with generous transparent padding and no overlap. Readable fins, tail, tiny bright eye, and subtle two-tone body shading. Each fish must have a clearly different silhouette. Actual transparent alpha, hard pixel edges, no text, labels, grid, shadows, animation frames, extra objects, gradients, or anti-aliased edges. Suitable for nearest-neighbor downscaling to roughly 32x20 pixels per fish.
+
 ### starter-boat.png
 
 Create one standalone transparent PNG game sprite: a very basic starter fishing boat for a cozy side-view 2D pixel-art game. Single small wooden skiff facing right, strict side elevation, horizontal flat deck, low rust-red painted gunwale, warm brown plank hull, tiny cream cabin on the left half, open deck on the right half for a separate fisherman sprite. Simple chunky pixel-art silhouette, limited warm palette, dark navy-brown pixel outline, no gradients or antialiasing, looks like a 96x40 pixel sprite enlarged nearest-neighbor. Boat occupies most of image width with small transparent margins. No person, no fishing rod, no sail, no water, no scenery, no shadows outside the hull, no text. True alpha transparent background. Beginner equipment, modest and charming, not elaborate.

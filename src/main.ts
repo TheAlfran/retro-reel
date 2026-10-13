@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
+import { PanelUI, SKILLS, type PanelAction } from './panel-ui';
 import './style.css';
 
 const SIDEBAR_MODE = document.body.classList.contains('vscode-sidebar');
@@ -10,23 +11,37 @@ const HUD_Y = H - HUD_HEIGHT;
 // Give the tropical background 55% of the scene above the controls in both layouts.
 // Retain enough sky for the boat in the shortest supported sidebar.
 const WATER_Y = Math.max(172, Math.round(HUD_Y * .55));
+// Nudge the sea painted into the sky art below the live surface so the
+// distant horizon sits a little lower without moving the boat or ocean layer.
+const SKY_BACKDROP_Y_OFFSET = 8;
 const SEA_DEPTH = H - WATER_Y;
 const SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
+const OCEAN_VIEW_HEIGHT = H - WATER_Y;
+const OCEAN_SCROLL_RANGE = Math.max(WATER_Y + 24, Math.round(OCEAN_VIEW_HEIGHT * 1.4));
+const OCEAN_CONTENT_HEIGHT = OCEAN_VIEW_HEIGHT + OCEAN_SCROLL_RANGE;
+const OCEAN_SIDE_RANGE = Math.max(220, Math.round(W * .55));
+const OCEAN_CONTENT_WIDTH = W + OCEAN_SIDE_RANGE * 2;
 const AUTO_FISHING_DURATION = 10_000;
 // Keep the larger boat inside both the narrow sidebar and the sky area.
 const BOAT_SCALE = Math.min(1.8, (W - 32) / 156, (WATER_Y - 28) / 90);
-// Only the keel sits below the surface; the boat and crew remain vertically still.
+// Only the keel sits below the surface; idle bobbing stays close to this baseline.
 const BOAT_Y = WATER_Y - 22 * BOAT_SCALE;
 
 type HookState = 'idle' | 'dropping' | 'timing' | 'reeling';
-type PanelName = 'skills' | 'shop' | 'inventory' | 'character' | 'boat' | 'codex';
-type SkillKey = 'focus' | 'precision' | 'luck' | 'treasure' | 'automation' | 'efficiency' | 'endurance' | 'frugality';
+type FishDepthZone = 'top' | 'middle' | 'bottom';
+export type PanelName = 'skills' | 'shop' | 'inventory' | 'character' | 'boat' | 'codex';
+export type SkillKey = 'focus' | 'precision' | 'luck' | 'treasure' | 'automation' | 'efficiency' | 'endurance' | 'frugality';
 
 interface AmbientFishData {
   speed: number;
-  color: number;
   direction: 1 | -1;
   waveOffset: number;
+  worldX: number;
+  baseY: number;
+  targetY: number;
+  depthMin: number;
+  depthMax: number;
+  nextTurnAt: number;
 }
 
 interface CatchResult {
@@ -38,7 +53,7 @@ interface CatchResult {
   color: string;
 }
 
-interface FishDefinition extends CatchResult {
+export interface FishDefinition extends CatchResult {
   tint: number;
   weight: number;
   minRod: number;
@@ -47,14 +62,14 @@ interface FishDefinition extends CatchResult {
   requirement?: string;
 }
 
-interface RodDefinition { tier: number; name: string; rarity: string; cost: number; color: string; }
-interface BaitDefinition { tier: number; name: string; rarity: string; cost: number; color: string; }
-interface BoatDefinition {
+export interface RodDefinition { tier: number; name: string; rarity: string; cost: number; color: string; }
+export interface BaitDefinition { tier: number; name: string; rarity: string; cost: number; color: string; }
+export interface BoatDefinition {
   tier: number; name: string; cost: number; bonus: string; hull: number; trim: number;
   valueBonus?: number; rareBonus?: number; autoDelay?: number;
 }
 
-interface Progress {
+export interface Progress {
   captainName: string;
   coins: number;
   xp: number;
@@ -169,6 +184,9 @@ function saveProgress(progress: Progress): void {
 class ReelScene extends Phaser.Scene {
   private boat!: Phaser.GameObjects.Container;
   private boatArt!: Phaser.GameObjects.Graphics;
+  private boatFlag!: Phaser.GameObjects.Graphics;
+  private boatDisturbance = 0;
+  private boatTravelDirection: 1 | -1 = 1;
   private starterBoat!: Phaser.GameObjects.Image;
   private starterBoatSubmerged!: Phaser.GameObjects.Image;
   private rod!: Phaser.GameObjects.Image;
@@ -181,9 +199,29 @@ class ReelScene extends Phaser.Scene {
   private hook!: Phaser.GameObjects.Arc;
   private line!: Phaser.GameObjects.Graphics;
   private fish!: Phaser.GameObjects.Group;
-  private waves!: Phaser.GameObjects.TileSprite;
+  private surfaceWaveFill!: Phaser.GameObjects.Graphics;
+  private waves!: Phaser.GameObjects.Graphics;
+  private boatWake!: Phaser.GameObjects.Graphics;
+  private surfaceGlow!: Phaser.GameObjects.Graphics;
+  private surfaceSparkles!: Phaser.GameObjects.Graphics;
   private surfaceFoam!: Phaser.GameObjects.TileSprite;
-  private surfaceScroll = 0;
+  private oceanBubbles!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private skyBackdrop!: Phaser.GameObjects.Image;
+  private oceanDepthFill!: Phaser.GameObjects.Graphics;
+  private reefBackdrop!: Phaser.GameObjects.Image;
+  private reefBlend!: Phaser.GameObjects.Graphics;
+  private reefBackdropBaseY = WATER_Y;
+  private oceanMaskShape!: Phaser.GameObjects.Graphics;
+  private oceanMask!: Phaser.Display.Masks.GeometryMask;
+  private depthText!: Phaser.GameObjects.Text;
+  private oceanDepthOffset = 0;
+  private oceanDepthTarget = 0;
+  private oceanXOffset = OCEAN_SIDE_RANGE;
+  private oceanXTarget = OCEAN_SIDE_RANGE;
+  private oceanDragging = false;
+  private oceanDragX = 0;
+  private oceanDragY = 0;
+  private boatWorldX = OCEAN_SIDE_RANGE + W / 2;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private statusText!: Phaser.GameObjects.Text;
@@ -195,6 +233,7 @@ class ReelScene extends Phaser.Scene {
   private timingMarker!: Phaser.GameObjects.Arc;
   private timingLabel!: Phaser.GameObjects.Text;
   private activePanel?: Phaser.GameObjects.Container;
+  private panelUI?: PanelUI;
   private hookState: HookState = 'idle';
   private progress = readProgress();
   private autoFishing = false;
@@ -220,20 +259,24 @@ class ReelScene extends Phaser.Scene {
   constructor() { super('reel'); }
 
   preload(): void {
-    this.load.image('sky-backdrop', W / WATER_Y < 3
-      ? new URL('./assets/sky-backdrop-narrow.png', import.meta.url).href
-      : new URL('./assets/sky-backdrop-wide.png', import.meta.url).href);
+    this.load.image('sky-backdrop', new URL('./assets/sky-backdrop-expanded-v2.png', import.meta.url).href);
     this.load.image('starter-boat', new URL('./assets/starter-boat-v4.png', import.meta.url).href);
     this.load.image('starter-captain', new URL('./assets/starter-captain.png', import.meta.url).href);
     this.load.image('starter-rod', new URL('./assets/starter-rod.png', import.meta.url).href);
-    // Load only the composition suited to the available underwater viewport.
-    this.load.image('reef-backdrop', W / SEA_DEPTH < 1.5
-      ? new URL('./assets/reef-backdrop-tall.png', import.meta.url).href
-      : new URL('./assets/reef-backdrop-wide.png', import.meta.url).href);
+    this.load.image('ambient-fish-sprites', new URL('./assets/ambient-fish-sprites.png', import.meta.url).href);
+    this.load.image('reef-backdrop', new URL('./assets/reef-backdrop-expanded-v2.png', import.meta.url).href);
   }
 
   create(): void {
+    this.panelUI = new PanelUI(action => this.handlePanelAction(action), () => this.closePanel());
     this.createTextures();
+    const ambientFish = this.textures.get('ambient-fish-sprites');
+    ambientFish.setFilter(Phaser.Textures.FilterMode.NEAREST);
+    // The generated fish are intentionally spaced by silhouette rather than
+    // centered in equal thirds, so use their measured alpha bounds as frames.
+    ambientFish.add('round', 0, 60, 194, 445, 359);
+    ambientFish.add('classic', 0, 587, 178, 688, 395);
+    ambientFish.add('long', 0, 1312, 234, 847, 303);
     this.drawWorld();
     this.fish = this.add.group();
     this.line = this.add.graphics().setDepth(8);
@@ -243,9 +286,10 @@ class ReelScene extends Phaser.Scene {
     this.landedFish = this.add.image(0, 0, 'fish').setDepth(11).setVisible(false);
     this.createHud();
     this.createTimingPanel();
+    this.createOceanDepthControls();
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.keys = this.input.keyboard!.addKeys('A,D,SPACE,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
-    this.spawnSchool(11);
+    this.spawnSchool();
     this.updateHud();
     this.game.events.on('captain-ready', (name: string) => {
       this.progress = readProgress();
@@ -258,10 +302,10 @@ class ReelScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     const dt = Math.min(delta / 1000, .05);
     this.bobTime += dt;
-    this.surfaceScroll = (this.surfaceScroll + 6 * dt) % 192;
-    // Slow opposing ripples shimmer around a steady waterline at the hull.
-    this.waves.tilePositionX = Math.floor(this.surfaceScroll);
-    this.waves.setAlpha(.96 + Math.sin(this.bobTime * .7) * .02);
+    this.updateOceanDepth(dt);
+    this.drawSurfaceWaves();
+    this.drawBoatFlag();
+    this.surfaceSparkles.setAlpha(.8 + Math.sin(this.bobTime * 1.6) * .16);
     this.surfaceFoam.tilePositionX = -Math.floor(this.bobTime * 3) % 192;
     this.surfaceFoam.setAlpha(.5 + Math.sin(this.bobTime * .9) * .15);
     if (!this.profileReady) {
@@ -288,17 +332,30 @@ class ReelScene extends Phaser.Scene {
 
   private createTextures(): void {
     const g = this.add.graphics();
-    g.fillStyle(0xffffff).fillEllipse(19, 10, 30, 13).fillTriangle(5, 10, 0, 3, 0, 17);
-    g.fillCircle(25, 8, 2).generateTexture('fish', 38, 20).clear();
-    g.fillStyle(0xffffff).fillCircle(4, 4, 4).generateTexture('bubble', 8, 8).clear();
 
-    // White, shallow crests make the gentle drift visible without a large swell.
-    g.fillStyle(0xffffff, .98).fillRect(0, 3, 192, 2);
-    g.fillStyle(0xf5fdff, .85)
-      .fillRect(8, 2, 28, 1).fillRect(66, 2, 38, 1).fillRect(143, 2, 24, 1);
-    g.fillStyle(0xd7f6ff, .55)
-      .fillRect(24, 5, 30, 1).fillRect(92, 5, 23, 1).fillRect(151, 5, 32, 1);
-    g.generateTexture('surface-line', 192, 8).clear();
+    // A crisp, shaded pixel fish. Neutral values preserve their contrast when
+    // the sprite is tinted to a different underwater color.
+    g.fillStyle(0x1d2b34)
+      .fillRect(6, 3, 20, 12).fillRect(3, 5, 25, 8)
+      .fillTriangle(7, 9, 0, 2, 0, 16)
+      .fillTriangle(13, 14, 20, 18, 22, 13);
+    g.fillStyle(0xf4f0d6)
+      .fillRect(7, 5, 18, 8).fillRect(4, 7, 23, 4)
+      .fillTriangle(6, 9, 1, 5, 1, 13);
+    g.fillStyle(0xb9ced0).fillRect(8, 11, 12, 2).fillRect(12, 5, 8, 1);
+    g.fillStyle(0xffffff).fillRect(22, 6, 3, 3);
+    g.fillStyle(0x17242c).fillRect(23, 7, 2, 2).fillRect(27, 9, 2, 1);
+    g.generateTexture('fish', 30, 19).clear();
+
+    // Hollow pixel bubble with a small highlight; scaling this texture creates
+    // multiple readable bubble sizes without soft vector edges.
+    g.fillStyle(0xffffff, .8)
+      .fillRect(2, 0, 4, 1).fillRect(1, 1, 1, 2).fillRect(6, 1, 1, 2)
+      .fillRect(0, 3, 1, 3).fillRect(7, 3, 1, 3)
+      .fillRect(1, 6, 1, 1).fillRect(6, 6, 1, 1).fillRect(2, 7, 4, 1);
+    g.fillStyle(0xffffff).fillRect(2, 1, 1, 2);
+    g.generateTexture('bubble', 8, 8).clear();
+
     g.fillStyle(0xffffff)
       .fillRect(16, 1, 15, 1).fillRect(78, 2, 22, 1).fillRect(148, 1, 18, 1)
       .fillRect(41, 5, 19, 1).fillRect(112, 6, 14, 1).fillRect(171, 5, 12, 1);
@@ -311,64 +368,227 @@ class ReelScene extends Phaser.Scene {
     // Keep the reference's bright blue water through the pale, hazy seabed.
     world.fillGradientStyle(0x498df6, 0x498df6, 0x639ff5, 0x639ff5)
       .fillRect(0, WATER_Y, W, SEA_DEPTH);
+    this.oceanMaskShape = this.add.graphics().setVisible(false);
+    this.oceanMaskShape.fillStyle(0xffffff).fillRect(0, WATER_Y, W, H - WATER_Y);
+    this.oceanMask = this.oceanMaskShape.createGeometryMask();
     this.drawReef();
-    this.waves = this.add.tileSprite(W / 2, WATER_Y, W, 8, 'surface-line')
-      // Draw the bright waterline over the hull to make the boat feel partially submerged.
-      .setDepth(13).setAlpha(.96);
+    // Keep the solid water lip behind the boat while its bright crest crosses
+    // in front; this preserves the visible blue submerged-hull treatment.
+    this.surfaceWaveFill = this.add.graphics().setDepth(11);
+    this.waves = this.add.graphics().setDepth(13);
+    this.boatWake = this.add.graphics().setDepth(14);
+    this.drawSurfaceWaves();
+    this.surfaceGlow = this.add.graphics().setDepth(13);
+    this.surfaceGlow.fillStyle(0xffffff, .36).fillRect(0, WATER_Y - 2, W, 4);
+    this.surfaceGlow.fillStyle(0xffffff, .27).fillRect(0, WATER_Y + 2, W, 3);
+    this.surfaceGlow.fillStyle(0xffffff, .18).fillRect(0, WATER_Y + 5, W, 3);
+    this.surfaceGlow.fillStyle(0xffffff, .1).fillRect(0, WATER_Y + 8, W, 3);
+    this.surfaceGlow.fillStyle(0xffffff, .04).fillRect(0, WATER_Y + 11, W, 3);
+    this.surfaceSparkles = this.add.graphics().setDepth(13);
+    const sparkleCount = Math.max(24, Math.floor(W / 23));
+    for (let i = 0; i < sparkleCount; i++) {
+      const x = Phaser.Math.Between(4, W - 4);
+      const y = Phaser.Math.Between(WATER_Y, WATER_Y + 7);
+      const width = Math.random() < .22 ? Phaser.Math.Between(3, 5) : Phaser.Math.Between(1, 2);
+      const alpha = Phaser.Math.FloatBetween(.38, .82);
+      this.surfaceSparkles.fillStyle(0xffffff, alpha).fillRect(x, y, width, 1);
+      if (width >= 4 && Math.random() < .5) {
+        this.surfaceSparkles.fillStyle(0xffffff, alpha * .55).fillRect(x + Math.floor(width / 2), y - 1, 1, 3);
+      }
+    }
     this.surfaceFoam = this.add.tileSprite(W / 2, WATER_Y, W, 8, 'surface-foam')
       .setDepth(13).setAlpha(.5);
-    this.add.particles(0, 0, 'bubble', {
-      x: { min: 20, max: W - 20 }, y: SEABED_Y,
-      lifespan: { min: 4200, max: 7500 }, speedY: { min: -14, max: -31 },
-      scale: { start: .34, end: .08 }, alpha: { start: .1, end: 0 },
-      frequency: 520, tint: 0xd5efff,
-    }).setDepth(4);
+    this.oceanBubbles = this.add.particles(0, 0, 'bubble', {
+      x: { min: 18, max: W - 18 },
+      y: { min: WATER_Y + 34, max: Math.max(WATER_Y + 48, SEABED_Y - 12) },
+      lifespan: { min: 2800, max: 6200 },
+      speedX: { min: -3, max: 3 }, speedY: { min: -9, max: -23 },
+      scale: { start: .18, end: .48 }, alpha: { start: .3, end: 0 },
+      frequency: 310,
+      tint: [0xd5efff, 0xbfe9ee, 0xf0f6d8],
+    }).setDepth(4).setMask(this.oceanMask);
+  }
+
+  private drawSurfaceWaves(): void {
+    const step = SIDEBAR_MODE ? 3 : 4;
+    const waveY = (x: number): number => {
+      let height = Math.sin(x * .036 + this.bobTime * 1.45) * 1.7
+        + Math.sin(x * .083 - this.bobTime * .9) * .65;
+      if (this.boatDisturbance > .01) {
+        const relativeX = (x - this.boat.x) * this.boatTravelDirection;
+        const radius = (relativeX < 0 ? 124 : 70) * BOAT_SCALE;
+        const proximity = Phaser.Math.Clamp(1 - Math.abs(relativeX) / radius, 0, 1);
+        const easedProximity = proximity * proximity;
+        height += easedProximity * this.boatDisturbance * (
+          Math.sin(x * .21 - this.bobTime * 8.8 * this.boatTravelDirection) * 2.35
+          + Math.sin(x * .39 + this.bobTime * 11.4) * .75
+        );
+      }
+      return WATER_Y + Math.round(height);
+    };
+
+    this.surfaceWaveFill.clear().fillStyle(0x498df6, 1)
+      .beginPath().moveTo(0, waveY(0));
+    for (let x = step; x <= W; x += step) this.surfaceWaveFill.lineTo(x, waveY(x));
+    this.surfaceWaveFill.lineTo(W, WATER_Y + 10).lineTo(0, WATER_Y + 10)
+      .closePath().fillPath();
+
+    this.waves.clear().lineStyle(1.5, 0xe2f8f0, .82)
+      .beginPath().moveTo(0, waveY(0));
+    for (let x = step; x <= W; x += step) this.waves.lineTo(x, waveY(x));
+    this.waves.strokePath();
+
+    this.boatWake.clear();
+    if (this.boatDisturbance > .025) {
+      const wake = this.boatWake;
+      const strength = this.boatDisturbance;
+      const direction = this.boatTravelDirection;
+      const phase = Math.floor(this.bobTime * 18) % 12;
+      wake.fillStyle(0xffffff, .3 + strength * .48);
+      for (let index = 0; index < 4; index++) {
+        const distance = (24 + index * 20 + phase) * BOAT_SCALE;
+        const length = Math.max(3, Math.round((13 - index * 2) * BOAT_SCALE * strength));
+        const x = Math.round(this.boat.x - direction * distance);
+        const y = WATER_Y + 2 + (index % 2) * 3;
+        wake.fillRect(direction === 1 ? x - length : x, y, length, 1);
+      }
+
+      const leadingEdge = Math.round(this.boat.x + direction * 60 * BOAT_SCALE);
+      const trailingEdge = Math.round(this.boat.x - direction * 57 * BOAT_SCALE);
+      const outwardRect = (edge: number, travelDirection: 1 | -1, length: number, y: number): void => {
+        wake.fillRect(travelDirection === 1 ? edge : edge - length, y, length, 1);
+      };
+
+      // A compact stack of bright pixels breaks over the leading end of the
+      // hull. The longer, lower bars make the splash read against a bright sky.
+      wake.fillStyle(0xffffff, .5 + strength * .45);
+      outwardRect(leadingEdge, direction, Math.round(13 * BOAT_SCALE), WATER_Y);
+      outwardRect(leadingEdge, direction, Math.round(9 * BOAT_SCALE), WATER_Y - 2);
+      outwardRect(leadingEdge, direction, Math.round(5 * BOAT_SCALE), WATER_Y - 4);
+      outwardRect(leadingEdge, direction, Math.round(2 * BOAT_SCALE), WATER_Y - 6);
+
+      // Churn fans out from the opposite end and swaps sides immediately when
+      // sailing direction changes.
+      const wakeDirection = -direction as 1 | -1;
+      wake.fillStyle(0xe8fbff, .38 + strength * .42);
+      outwardRect(trailingEdge, wakeDirection, Math.round(24 * BOAT_SCALE), WATER_Y + 1);
+      outwardRect(trailingEdge, wakeDirection, Math.round(18 * BOAT_SCALE), WATER_Y + 3);
+      outwardRect(trailingEdge, wakeDirection, Math.round(10 * BOAT_SCALE), WATER_Y + 5);
+    }
   }
 
   private drawSky(): void {
     const skyTexture = this.textures.get('sky-backdrop');
     skyTexture.setFilter(Phaser.Textures.FilterMode.NEAREST);
     const skyFrame = this.textures.getFrame('sky-backdrop')!;
-    const skyScale = W / skyFrame.width;
-    if (W / WATER_Y >= 3) {
-      // Excess sky in wide views extends above the canvas and is naturally clipped.
-      this.add.image(W / 2, WATER_Y, 'sky-backdrop').setOrigin(.5, 1).setScale(skyScale);
-      return;
-    }
-
-    // These boundaries follow cloud-free rows in the narrow artwork. Add tall-view
-    // space only between clouds; cloud banks, islands and palms keep their shape.
-    const bands = [0, .12, .25, .30, .40, .42, .84, 1]
-      .map(fraction => Math.round(skyFrame.height * fraction));
-    const extraSkyWeights = [.3, 0, .4, 0, .3, 0, 0];
-    const seaExtra = SIDEBAR_MODE ? (skyFrame.height - bands[6]) * skyScale * .35 : 0;
-    const backdropHeight = skyFrame.height * skyScale + seaExtra;
-    const extraSky = Math.max(0, WATER_Y - backdropHeight);
-    let y = WATER_Y - backdropHeight - extraSky;
-    for (let i = 0; i < bands.length - 1; i++) {
-      const sourceY = bands[i];
-      const sourceHeight = bands[i + 1] - sourceY;
-      const height = sourceHeight * skyScale + extraSky * extraSkyWeights[i]
-        + (i === bands.length - 2 ? seaExtra : 0);
-      const top = Math.round(y);
-      const bottom = Math.round(y + height);
-      // Separate frames place every edge on an exact pixel, avoiding crop seams.
-      const frameName = `sky-band-${i}`;
-      if (!skyTexture.has(frameName)) {
-        skyTexture.add(frameName, 0, 0, sourceY, skyFrame.width, sourceHeight);
-      }
-      this.add.image(0, top, 'sky-backdrop', frameName).setOrigin(0)
-        .setDisplaySize(W, bottom - top);
-      y += height;
-    }
+    const skyHeight = OCEAN_CONTENT_WIDTH * skyFrame.height / skyFrame.width;
+    this.skyBackdrop = this.add.image(
+      -this.oceanXOffset, WATER_Y + SKY_BACKDROP_Y_OFFSET, 'sky-backdrop',
+    )
+      .setOrigin(0, 1).setDisplaySize(OCEAN_CONTENT_WIDTH, skyHeight);
   }
 
   private drawReef(): void {
     // A single atmospheric scene embeds the corals in the seabed instead of
     // presenting separate, collectible-looking plant sprites.
     this.textures.get('reef-backdrop').setFilter(Phaser.Textures.FilterMode.NEAREST);
-    this.add.image(0, WATER_Y, 'reef-backdrop').setOrigin(0)
-      .setDisplaySize(W, SEA_DEPTH).setDepth(1);
+    const seaColor = 0x498df6;
+    this.oceanDepthFill = this.add.graphics().setPosition(-this.oceanXOffset, 0)
+      .setDepth(1).setMask(this.oceanMask);
+    this.oceanDepthFill.fillStyle(seaColor)
+      .fillRect(0, WATER_Y, OCEAN_CONTENT_WIDTH, OCEAN_CONTENT_HEIGHT);
+
+    const reefFrame = this.textures.getFrame('reef-backdrop')!;
+    const reefHeight = OCEAN_CONTENT_WIDTH * reefFrame.height / reefFrame.width;
+    this.reefBackdropBaseY = WATER_Y + OCEAN_CONTENT_HEIGHT - reefHeight;
+    this.reefBackdrop = this.add.image(-this.oceanXOffset, this.reefBackdropBaseY, 'reef-backdrop')
+      .setOrigin(0).setDisplaySize(OCEAN_CONTENT_WIDTH, reefHeight).setDepth(1)
+      .setMask(this.oceanMask);
+
+    const blendHeight = Math.min(130, reefHeight * .24);
+    this.reefBlend = this.add.graphics().setPosition(-this.oceanXOffset, 0)
+      .setDepth(1).setMask(this.oceanMask);
+    this.reefBlend.fillGradientStyle(
+      seaColor, seaColor, seaColor, seaColor, .98, .98, 0, 0,
+    ).fillRect(0, this.reefBackdropBaseY, OCEAN_CONTENT_WIDTH, blendHeight);
+  }
+
+  private createOceanDepthControls(): void {
+    this.depthText = this.add.text(W - 10, WATER_Y + 15, 'DEPTH 0m  ·  SCROLL / DRAG', {
+      fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '7px' : '9px', color: '#e8fbff',
+      backgroundColor: '#174f7f', padding: { x: 5, y: 3 },
+    }).setOrigin(1, 0).setDepth(20).setAlpha(.72);
+
+    const overOcean = (pointer: Phaser.Input.Pointer): boolean => {
+      const surfaceY = WATER_Y - this.oceanDepthOffset;
+      return pointer.y > Math.max(0, surfaceY + 12) && pointer.y < H && !this.activePanel;
+    };
+    this.input.on('wheel', (
+      pointer: Phaser.Input.Pointer,
+      _over: Phaser.GameObjects.GameObject[],
+      _deltaX: number,
+      deltaY: number,
+    ) => {
+      if (!overOcean(pointer)) return;
+      this.oceanDepthTarget = Phaser.Math.Clamp(
+        this.oceanDepthTarget + deltaY * .55, 0, OCEAN_SCROLL_RANGE,
+      );
+    });
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (!overOcean(pointer)) return;
+      this.oceanDragging = true;
+      this.oceanDragX = pointer.x;
+      this.oceanDragY = pointer.y;
+      this.game.canvas.style.cursor = 'grabbing';
+    });
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!this.oceanDragging || !pointer.isDown) return;
+      const deltaX = pointer.x - this.oceanDragX;
+      const deltaY = pointer.y - this.oceanDragY;
+      this.oceanDragX = pointer.x;
+      this.oceanDragY = pointer.y;
+      this.oceanXTarget = Phaser.Math.Clamp(
+        this.oceanXTarget - deltaX, 0, OCEAN_CONTENT_WIDTH - W,
+      );
+      this.oceanDepthTarget = Phaser.Math.Clamp(
+        this.oceanDepthTarget - deltaY, 0, OCEAN_SCROLL_RANGE,
+      );
+    });
+    const stopDragging = (): void => {
+      this.oceanDragging = false;
+      this.game.canvas.style.cursor = 'default';
+    };
+    this.input.on('pointerup', stopDragging);
+    this.input.on('gameout', stopDragging);
+  }
+
+  private updateOceanDepth(dt: number): void {
+    const response = 1 - Math.exp(-dt * 10);
+    this.oceanXOffset = Phaser.Math.Linear(this.oceanXOffset, this.oceanXTarget, response);
+    this.oceanDepthOffset = Phaser.Math.Linear(
+      this.oceanDepthOffset, this.oceanDepthTarget, response,
+    );
+    const surfaceY = Math.max(0, WATER_Y - this.oceanDepthOffset);
+    this.oceanMaskShape.clear().fillStyle(0xffffff).fillRect(0, surfaceY, W, H - surfaceY);
+    this.skyBackdrop.x = -this.oceanXOffset;
+    this.skyBackdrop.y = WATER_Y + SKY_BACKDROP_Y_OFFSET - this.oceanDepthOffset;
+    this.oceanDepthFill.x = -this.oceanXOffset;
+    this.oceanDepthFill.y = -this.oceanDepthOffset;
+    this.reefBackdrop.x = -this.oceanXOffset;
+    this.reefBackdrop.y = this.reefBackdropBaseY - this.oceanDepthOffset;
+    this.reefBlend.x = -this.oceanXOffset;
+    this.reefBlend.y = -this.oceanDepthOffset;
+    this.surfaceWaveFill.y = -this.oceanDepthOffset;
+    this.waves.y = -this.oceanDepthOffset;
+    this.boatWake.y = -this.oceanDepthOffset;
+    this.surfaceGlow.y = -this.oceanDepthOffset;
+    this.surfaceSparkles.y = -this.oceanDepthOffset;
+    this.surfaceFoam.y = WATER_Y - this.oceanDepthOffset;
+    this.oceanBubbles.y = -this.oceanDepthOffset * .7;
+    this.boat.x = this.boatWorldX - this.oceanXOffset;
+    this.boat.y = BOAT_Y - this.oceanDepthOffset;
+    const metres = Math.round(this.oceanDepthOffset * .35);
+    this.depthText.setText(`DEPTH ${metres}m  ·  SCROLL / DRAG`);
   }
 
   private createBoat(): void {
@@ -376,6 +596,7 @@ class ReelScene extends Phaser.Scene {
       this.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
     }
     this.boatArt = this.add.graphics();
+    this.boatFlag = this.add.graphics();
     const boatFrame = this.textures.getFrame('starter-boat')!;
     const boatWidth = 144;
     const boatHeight = boatWidth * boatFrame.height / boatFrame.width;
@@ -403,10 +624,32 @@ class ReelScene extends Phaser.Scene {
     const captain = this.add.image(22, 14, 'starter-captain').setOrigin(.5, .87).setDisplaySize(28, 29);
     this.rod = this.add.image(26, 11.8, 'starter-rod').setOrigin(.27, .83).setDisplaySize(22, 41);
     this.boat = this.add.container(W / 2, BOAT_Y, [
-      this.starterBoat, this.rod, captain, foregroundHull, this.boatArt, this.starterBoatSubmerged,
+      this.starterBoat, this.boatFlag, this.rod, captain, foregroundHull, this.boatArt,
+      this.starterBoatSubmerged,
     ])
       .setScale(BOAT_SCALE).setDepth(12);
     this.paintBoat();
+    this.drawBoatFlag();
+  }
+
+  private drawBoatFlag(): void {
+    if (!this.boatFlag) return;
+    const frame = Math.floor(this.bobTime * 8) % 4;
+    const tipOffset = [0, 1, 0, -1][frame];
+    const foldOffset = [0, -1, 1, 0][frame];
+    const flag = this.boatFlag.clear();
+
+    flag.lineStyle(1, 0x59636a, .9).fillStyle(0xf7f3df, 1)
+      .beginPath()
+      .moveTo(-29, -29)
+      .lineTo(-15, -27 + tipOffset)
+      .lineTo(-18, -24 + foldOffset)
+      .lineTo(-29, -24)
+      .closePath().fillPath().strokePath();
+    flag.lineStyle(1, 0xffffff, .9)
+      .beginPath().moveTo(-28, -28).lineTo(-17, -26 + tipOffset).strokePath();
+    flag.fillStyle(0xc9d5d4, .85)
+      .fillRect(-28, -24, Math.max(5, 10 + foldOffset), 1);
   }
 
   private paintBoat(): void {
@@ -474,11 +717,20 @@ class ReelScene extends Phaser.Scene {
     HUD_ICONS[panel].forEach((row, rowIndex) => {
       [...row].forEach((color, column) => {
         if (color === '.') return;
+        icon.fillStyle(0x061820, .48).fillRect(
+          (column - 8) * pixel + 1, (rowIndex - 8) * pixel + 2, pixel, pixel,
+        );
+      });
+    });
+    HUD_ICONS[panel].forEach((row, rowIndex) => {
+      [...row].forEach((color, column) => {
+        if (color === '.') return;
         icon.fillStyle(HUD_PALETTE[color]).fillRect(
           (column - 8) * pixel, (rowIndex - 8) * pixel, pixel, pixel,
         );
       });
     });
+    icon.setScale(1.06);
     const button = this.add.container(x, y, [frame, icon]).setDepth(22).setSize(size, size)
       .setName(panel).setInteractive({ useHandCursor: true });
     const tooltip = panel === 'character' ? 'PROFILE' : panel === 'cast' ? 'CAST / REEL [SPACE]'
@@ -519,12 +771,25 @@ class ReelScene extends Phaser.Scene {
   }
 
   private updateBoat(dt: number): void {
-    if (this.hookState !== 'idle' || this.activePanel) return;
     let move = 0;
-    if (this.cursors.left.isDown || this.keys.A.isDown) move--;
-    if (this.cursors.right.isDown || this.keys.D.isDown) move++;
+    const canSteer = this.hookState === 'idle' && !this.activePanel;
+    if (canSteer && (this.cursors.left.isDown || this.keys.A.isDown)) move--;
+    if (canSteer && (this.cursors.right.isDown || this.keys.D.isDown)) move++;
+    if (move !== 0) this.boatTravelDirection = move as 1 | -1;
+    const wakeResponse = 1 - Math.exp(-dt * (move === 0 ? 4.2 : 9));
+    this.boatDisturbance = Phaser.Math.Linear(this.boatDisturbance, Math.abs(move), wakeResponse);
+    if (!canSteer) return;
     const edge = 78 * BOAT_SCALE;
-    this.boat.x = Phaser.Math.Clamp(this.boat.x + move * 170 * dt, edge, W - edge);
+    this.boatWorldX = Phaser.Math.Clamp(
+      this.boatWorldX + move * 170 * dt, edge, OCEAN_CONTENT_WIDTH - edge,
+    );
+    const screenX = this.boatWorldX - this.oceanXOffset;
+    const leftFollow = W * .34;
+    const rightFollow = W * .66;
+    if (move < 0 && screenX < leftFollow) this.oceanXTarget = this.boatWorldX - leftFollow;
+    if (move > 0 && screenX > rightFollow) this.oceanXTarget = this.boatWorldX - rightFollow;
+    this.oceanXTarget = Phaser.Math.Clamp(this.oceanXTarget, 0, OCEAN_CONTENT_WIDTH - W);
+    this.boat.x = this.boatWorldX - this.oceanXOffset;
   }
 
   private handleFishingAction(): void {
@@ -785,33 +1050,112 @@ class ReelScene extends Phaser.Scene {
     this.fish.children.each(object => {
       const fish = object as Phaser.GameObjects.Sprite;
       const data = fish.getData('data') as AmbientFishData;
-      fish.x += data.speed * data.direction * dt;
-      fish.y += Math.sin(this.bobTime * 1.9 + data.waveOffset) * 4 * dt;
-      if ((data.direction === 1 && fish.x > W + 55) || (data.direction === -1 && fish.x < -55)) fish.destroy();
+
+      if (this.bobTime >= data.nextTurnAt) {
+        data.targetY = Phaser.Math.Between(data.depthMin, data.depthMax);
+        data.speed = Phaser.Math.Between(18, 52);
+        data.nextTurnAt = this.bobTime + Phaser.Math.FloatBetween(3.5, 8.5);
+        if (data.worldX > 80 && data.worldX < OCEAN_CONTENT_WIDTH - 80 && Math.random() < .28) {
+          data.direction = data.direction === 1 ? -1 : 1;
+          fish.setFlipX(data.direction === -1);
+        }
+      }
+
+      data.worldX += data.speed * data.direction * dt;
+      fish.x = data.worldX - this.oceanXOffset;
+      data.baseY = Phaser.Math.Linear(data.baseY, data.targetY, 1 - Math.exp(-dt * .72));
+      const swimPhase = this.bobTime * (1.45 + data.speed / 90) + data.waveOffset;
+      fish.y = data.baseY - this.oceanDepthOffset + Math.sin(swimPhase) * 2.4
+        + Math.sin(fish.x * .018 + data.waveOffset) * .8;
+      fish.setAngle(Math.sin(swimPhase + .7) * 2.2 * data.direction);
+      if (data.direction === 1 && data.worldX > OCEAN_CONTENT_WIDTH + 50) {
+        data.worldX = OCEAN_CONTENT_WIDTH + 50;
+        data.direction = -1;
+        fish.setFlipX(true);
+      } else if (data.direction === -1 && data.worldX < -50) {
+        data.worldX = -50;
+        data.direction = 1;
+        fish.setFlipX(false);
+      }
       return true;
     });
   }
 
-  private spawnSchool(count: number): void { for (let i = 0; i < count; i++) this.spawnFish(true); }
+  private spawnSchool(): void {
+    const distribution: Array<[FishDepthZone, number]> = [
+      ['top', 3], ['middle', 4], ['bottom', 5],
+    ];
+    distribution.forEach(([zone, count]) => {
+      for (let i = 0; i < count; i++) this.spawnFish(true, zone);
+    });
+  }
 
-  private spawnFish(initial = false): void {
+  private fishDepthBounds(zone: FishDepthZone): { min: number; max: number } {
+    const top = WATER_Y + 42;
+    const usableDepth = OCEAN_CONTENT_HEIGHT - 70;
+    if (zone === 'top') return { min: top, max: top + usableDepth * .28 };
+    if (zone === 'middle') return { min: top + usableDepth * .25, max: top + usableDepth * .62 };
+    return { min: top + usableDepth * .58, max: top + usableDepth * .96 };
+  }
+
+  private spawnFish(initial = false, requestedZone?: FishDepthZone): void {
+    const roll = Math.random();
+    const zone = requestedZone ?? (roll < .2 ? 'top' : roll < .52 ? 'middle' : 'bottom');
+    const bounds = this.fishDepthBounds(zone);
     const direction: 1 | -1 = Math.random() > .5 ? 1 : -1;
-    const y = Phaser.Math.Between(WATER_Y + 46, Math.max(WATER_Y + 55, SEABED_Y - 25));
+    const y = Phaser.Math.Between(bounds.min, bounds.max);
+    const worldX = initial
+      ? Phaser.Math.Between(20, OCEAN_CONTENT_WIDTH - 20)
+      : (direction === 1 ? -50 : OCEAN_CONTENT_WIDTH + 50);
+    const frame = Phaser.Math.Between(0, 2);
+    const frameNames = ['round', 'classic', 'long'] as const;
     const fish = this.add.sprite(
-      initial ? Phaser.Math.Between(20, W - 20) : (direction === 1 ? -35 : W + 35), y, 'fish',
+      worldX - this.oceanXOffset,
+      y,
+      'ambient-fish-sprites',
+      frameNames[frame],
     );
-    const palette = [0x87d6c7, 0x78a9c7, 0xb184cc, 0xd9b66f];
     const data: AmbientFishData = {
-      speed: Phaser.Math.Between(24, 54), color: Phaser.Utils.Array.GetRandom(palette), direction,
-      waveOffset: Math.random() * Math.PI * 2,
+      speed: Phaser.Math.Between(20, 48), direction, waveOffset: Math.random() * Math.PI * 2,
+      worldX,
+      baseY: y,
+      targetY: Phaser.Math.Between(bounds.min, bounds.max),
+      depthMin: bounds.min,
+      depthMax: bounds.max,
+      nextTurnAt: this.bobTime + Phaser.Math.FloatBetween(2.5, 7),
     };
-    fish.setData('data', data).setTint(data.color).setFlipX(direction === -1)
-      .setDepth(5).setAlpha(.62).setScale(Phaser.Math.FloatBetween(.65, 1.05));
+    const spriteWidth = [27, 36, 44][frame];
+    const spriteHeight = [22, 21, 16][frame];
+    const spriteScale = Phaser.Math.FloatBetween(.88, 1.05);
+    fish.setData('data', data).setFlipX(direction === -1)
+      .setDisplaySize(spriteWidth * spriteScale, spriteHeight * spriteScale)
+      .setDepth(Phaser.Math.Between(2, 3)).setAlpha(Phaser.Math.FloatBetween(.48, .68))
+      .setMask(this.oceanMask);
+    // A compact blue blur pushes ambient sprites into the scenery without
+    // affecting the caught fish, HUD, or foreground artwork.
+    fish.postFX.addBlur(0, .5, .5, Phaser.Math.FloatBetween(.38, .52), 0xd5efff, 2);
     this.fish.add(fish);
   }
 
   private openPanel(name: PanelName): void {
     this.closePanel();
+    if (this.panelUI) {
+      // Keep a lightweight Phaser marker so fishing and sailing pause while
+      // the accessible HTML dialog is open.
+      this.activePanel = this.add.container(0, 0).setVisible(false);
+      this.panelUI.show(name, {
+        progress: this.progress,
+        fish: FISH,
+        rods: RODS,
+        baits: BAITS,
+        boats: BOATS,
+        autoFishing: this.autoFishing,
+        streak: this.streak,
+      }, this.shopCategory);
+      return;
+    }
+
+    // Canvas fallback for hosts where the HTML panel cannot be initialized.
     const largePanel = name === 'character' || name === 'skills' || name === 'shop' || name === 'inventory' || name === 'codex';
     const panelWidth = Math.min(largePanel ? 760 : 620, W - 24);
     const panelHeight = Math.min(largePanel ? 410 : 330, HUD_Y - 16);
@@ -1102,9 +1446,59 @@ class ReelScene extends Phaser.Scene {
   }
 
   private closePanel(): void {
+    this.panelUI?.hide();
     this.activePanel?.destroy(true);
     this.activePanel = undefined;
     this.profileStats = undefined;
+  }
+
+  private handlePanelAction(action: PanelAction): string | void {
+    if (action.type === 'skill') {
+      const skill = SKILLS.find(item => item.key === action.key);
+      if (!skill) return;
+      if (skill.parent && this.progress[skill.parent] <= 0) return 'Learn the previous talent first.';
+      if (this.progress[action.key] >= 5) return 'That talent is already mastered.';
+      if (this.progress.skillPoints <= 0) return 'No talent points available.';
+      this.progress[action.key]++;
+      this.progress.skillPoints--;
+    }
+
+    if (action.type === 'rod') {
+      const rod = RODS[action.tier - 1];
+      if (!rod || action.tier !== this.progress.rodLevel + 1) return 'Upgrade rods in order.';
+      if (!this.spendCoins(rod.cost)) return 'Not enough coins for that rod.';
+      this.progress.rodLevel = action.tier;
+    }
+
+    if (action.type === 'bait') {
+      const bait = BAITS[action.tier - 1];
+      if (!bait) return;
+      if (!this.spendCoins(bait.cost)) return 'Not enough coins for that bait tin.';
+      const index = action.tier - 1;
+      this.progress.baitStock[index] = (this.progress.baitStock[index] ?? 0) + 3 + this.progress.frugality;
+      if ((this.progress.baitStock[this.progress.selectedBait] ?? 0) === 0) this.progress.selectedBait = index;
+    }
+
+    if (action.type === 'equip') {
+      const index = action.tier - 1;
+      if ((this.progress.baitStock[index] ?? 0) <= 0) return 'That bait is out of stock.';
+      this.progress.selectedBait = index;
+    }
+
+    if (action.type === 'boat') {
+      const tier = this.progress.hullLevel + 1;
+      const boat = BOATS[tier - 1];
+      if (!boat) return 'Your fleet is already complete.';
+      if (!this.spendCoins(boat.cost)) return 'Not enough coins for that vessel.';
+      this.progress.hullLevel = tier;
+      this.paintBoat();
+    }
+
+    if (action.type === 'auto') this.toggleAutoFishing();
+
+    this.progress.bait = this.progress.baitStock[this.progress.selectedBait] ?? 0;
+    saveProgress(this.progress);
+    this.updateHud();
   }
 
   private spendCoins(amount: number): boolean {
@@ -1149,7 +1543,9 @@ const game = new Phaser.Game({
   backgroundColor: '#498df6',
   pixelArt: true,
   antialias: false,
-  render: { roundPixels: true },
+  // Preserve nearest-neighbor artwork while allowing the boat's fractional
+  // bob/rock positions to render smoothly instead of snapping each frame.
+  render: { roundPixels: false },
   // Direct image loads respect the webview's existing img-src policy.
   loader: { imageLoadType: 'HTMLImageElement' },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
