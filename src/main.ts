@@ -4,28 +4,47 @@ import { PanelUI, SKILLS, type PanelAction } from './panel-ui';
 import './style.css';
 
 const SIDEBAR_MODE = document.body.classList.contains('vscode-sidebar');
-const W = SIDEBAR_MODE ? Math.max(280, Math.round(window.innerWidth)) : 960;
-const H = SIDEBAR_MODE ? Math.max(440, Math.round(window.innerHeight)) : 540;
-const HUD_HEIGHT = SIDEBAR_MODE ? 130 : 96;
-const HUD_Y = H - HUD_HEIGHT;
-// Give the tropical background 55% of the scene above the controls in both layouts.
-// Retain enough sky for the boat in the shortest supported sidebar.
-const WATER_Y = Math.max(172, Math.round(HUD_Y * .55));
+let W = 960;
+let H = 540;
+let HUD_HEIGHT = 96;
+let HUD_Y = H - HUD_HEIGHT;
+let WATER_Y = Math.max(172, Math.round(HUD_Y * .55));
 // Nudge the sea painted into the sky art below the live surface so the
 // distant horizon sits a little lower without moving the boat or ocean layer.
 const SKY_BACKDROP_Y_OFFSET = 8;
-const SEA_DEPTH = H - WATER_Y;
-const SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
-const OCEAN_VIEW_HEIGHT = H - WATER_Y;
-const OCEAN_SCROLL_RANGE = Math.max(WATER_Y + 24, Math.round(OCEAN_VIEW_HEIGHT * 1.4));
-const OCEAN_CONTENT_HEIGHT = OCEAN_VIEW_HEIGHT + OCEAN_SCROLL_RANGE;
-const OCEAN_SIDE_RANGE = Math.max(220, Math.round(W * .55));
-const OCEAN_CONTENT_WIDTH = W + OCEAN_SIDE_RANGE * 2;
+let SEA_DEPTH = H - WATER_Y;
+let SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
+let OCEAN_VIEW_HEIGHT = H - WATER_Y;
+let OCEAN_SCROLL_RANGE = Math.max(WATER_Y + 24, Math.round(OCEAN_VIEW_HEIGHT * 1.4));
+let OCEAN_CONTENT_HEIGHT = OCEAN_VIEW_HEIGHT + OCEAN_SCROLL_RANGE;
+let OCEAN_SIDE_RANGE = Math.max(220, Math.round(W * .55));
+let OCEAN_CONTENT_WIDTH = W + OCEAN_SIDE_RANGE * 2;
 const AUTO_FISHING_DURATION = 10_000;
 // Keep the larger boat inside both the narrow sidebar and the sky area.
-const BOAT_SCALE = Math.min(1.8, (W - 32) / 156, (WATER_Y - 28) / 90);
+let BOAT_SCALE = Math.min(1.8, (W - 32) / 156, (WATER_Y - 28) / 90);
 // Only the keel sits below the surface; idle bobbing stays close to this baseline.
-const BOAT_Y = WATER_Y - 22 * BOAT_SCALE;
+let BOAT_Y = WATER_Y - 22 * BOAT_SCALE;
+
+function updateViewportMetrics(): void {
+  W = Math.max(SIDEBAR_MODE ? 280 : 320, Math.round(window.innerWidth));
+  H = Math.max(SIDEBAR_MODE ? 440 : 360, Math.round(window.innerHeight));
+  HUD_HEIGHT = SIDEBAR_MODE ? 130 : Math.min(96, Math.max(72, Math.round(H * .16)));
+  HUD_Y = H - HUD_HEIGHT;
+  // Short landscape screens need a shallower sky, while tall/mobile screens
+  // expose more ocean depth like the responsive reference layout.
+  WATER_Y = Math.max(150, Math.round(HUD_Y * (H > W ? .45 : .55)));
+  SEA_DEPTH = H - WATER_Y;
+  SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
+  OCEAN_VIEW_HEIGHT = H - WATER_Y;
+  OCEAN_SCROLL_RANGE = Math.max(WATER_Y + 24, Math.round(OCEAN_VIEW_HEIGHT * 1.4));
+  OCEAN_CONTENT_HEIGHT = OCEAN_VIEW_HEIGHT + OCEAN_SCROLL_RANGE;
+  OCEAN_SIDE_RANGE = Math.max(220, Math.round(W * .55));
+  OCEAN_CONTENT_WIDTH = W + OCEAN_SIDE_RANGE * 2;
+  BOAT_SCALE = Math.min(1.8, (W - 32) / 156, (WATER_Y - 28) / 90);
+  BOAT_Y = WATER_Y - 22 * BOAT_SCALE;
+}
+
+updateViewportMetrics();
 
 type HookState = 'idle' | 'dropping' | 'timing' | 'reeling';
 type FishDepthZone = 'top' | 'middle' | 'bottom';
@@ -207,8 +226,10 @@ class ReelScene extends Phaser.Scene {
   private surfaceFoam!: Phaser.GameObjects.TileSprite;
   private oceanBubbles!: Phaser.GameObjects.Particles.ParticleEmitter;
   private skyBackdrop!: Phaser.GameObjects.Image;
+  private skyBackdropWidth = W;
   private oceanDepthFill!: Phaser.GameObjects.Graphics;
   private reefBackdrop!: Phaser.GameObjects.Image;
+  private reefBackdropWidth = W;
   private reefBlend!: Phaser.GameObjects.Graphics;
   private reefBackdropBaseY = WATER_Y;
   private oceanMaskShape!: Phaser.GameObjects.Graphics;
@@ -268,15 +289,25 @@ class ReelScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.panelUI?.destroy();
+    this.activePanel = undefined;
+    this.hookState = 'idle';
+    this.oceanDepthOffset = 0;
+    this.oceanDepthTarget = 0;
+    this.oceanXOffset = OCEAN_SIDE_RANGE;
+    this.oceanXTarget = OCEAN_SIDE_RANGE;
+    this.boatWorldX = OCEAN_SIDE_RANGE + W / 2;
+    this.reefBackdropBaseY = WATER_Y;
+    this.progress = readProgress();
     this.panelUI = new PanelUI(action => this.handlePanelAction(action), () => this.closePanel());
-    this.createTextures();
+    if (!this.textures.exists('fish')) this.createTextures();
     const ambientFish = this.textures.get('ambient-fish-sprites');
     ambientFish.setFilter(Phaser.Textures.FilterMode.NEAREST);
     // The generated fish are intentionally spaced by silhouette rather than
     // centered in equal thirds, so use their measured alpha bounds as frames.
-    ambientFish.add('round', 0, 60, 194, 445, 359);
-    ambientFish.add('classic', 0, 587, 178, 688, 395);
-    ambientFish.add('long', 0, 1312, 234, 847, 303);
+    if (!ambientFish.has('round')) ambientFish.add('round', 0, 60, 194, 445, 359);
+    if (!ambientFish.has('classic')) ambientFish.add('classic', 0, 587, 178, 688, 395);
+    if (!ambientFish.has('long')) ambientFish.add('long', 0, 1312, 234, 847, 303);
     this.drawWorld();
     this.fish = this.add.group();
     this.line = this.add.graphics().setDepth(8);
@@ -291,12 +322,15 @@ class ReelScene extends Phaser.Scene {
     this.keys = this.input.keyboard!.addKeys('A,D,SPACE,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
     this.spawnSchool();
     this.updateHud();
-    this.game.events.on('captain-ready', (name: string) => {
-      this.progress = readProgress();
-      this.profileReady = true;
-      this.updateHud();
-      this.flashStatus(`WELCOME ABOARD, ${name.toUpperCase()}!`, '#fff1be');
-    });
+    this.game.events.off('captain-ready', this.handleCaptainReady, this);
+    this.game.events.on('captain-ready', this.handleCaptainReady, this);
+  }
+
+  private handleCaptainReady(name: string): void {
+    this.progress = readProgress();
+    this.profileReady = true;
+    this.updateHud();
+    this.flashStatus(`WELCOME ABOARD, ${name.toUpperCase()}!`, '#fff1be');
   }
 
   update(time: number, delta: number): void {
@@ -481,11 +515,15 @@ class ReelScene extends Phaser.Scene {
     const skyTexture = this.textures.get('sky-backdrop');
     skyTexture.setFilter(Phaser.Textures.FilterMode.NEAREST);
     const skyFrame = this.textures.getFrame('sky-backdrop')!;
-    const skyHeight = OCEAN_CONTENT_WIDTH * skyFrame.height / skyFrame.width;
+    // Scale raster scenery only by whole pixels. Fractionally enlarging it to
+    // the full scrollable world made the pixel art soft on ultrawide windows.
+    const skyScale = Math.max(1, Math.ceil(W / skyFrame.width));
+    this.skyBackdropWidth = skyFrame.width * skyScale;
+    const skyHeight = skyFrame.height * skyScale;
     this.skyBackdrop = this.add.image(
-      -this.oceanXOffset, WATER_Y + SKY_BACKDROP_Y_OFFSET, 'sky-backdrop',
+      -this.backdropOffset(this.skyBackdropWidth), WATER_Y + SKY_BACKDROP_Y_OFFSET, 'sky-backdrop',
     )
-      .setOrigin(0, 1).setDisplaySize(OCEAN_CONTENT_WIDTH, skyHeight);
+      .setOrigin(0, 1).setDisplaySize(this.skyBackdropWidth, skyHeight);
   }
 
   private drawReef(): void {
@@ -499,10 +537,16 @@ class ReelScene extends Phaser.Scene {
       .fillRect(0, WATER_Y, OCEAN_CONTENT_WIDTH, OCEAN_CONTENT_HEIGHT);
 
     const reefFrame = this.textures.getFrame('reef-backdrop')!;
-    const reefHeight = OCEAN_CONTENT_WIDTH * reefFrame.height / reefFrame.width;
+    const reefScale = Math.max(
+      1,
+      Math.ceil(W / reefFrame.width),
+      Math.ceil(OCEAN_CONTENT_HEIGHT / reefFrame.height),
+    );
+    this.reefBackdropWidth = reefFrame.width * reefScale;
+    const reefHeight = reefFrame.height * reefScale;
     this.reefBackdropBaseY = WATER_Y + OCEAN_CONTENT_HEIGHT - reefHeight;
-    this.reefBackdrop = this.add.image(-this.oceanXOffset, this.reefBackdropBaseY, 'reef-backdrop')
-      .setOrigin(0).setDisplaySize(OCEAN_CONTENT_WIDTH, reefHeight).setDepth(1)
+    this.reefBackdrop = this.add.image(-this.backdropOffset(this.reefBackdropWidth), this.reefBackdropBaseY, 'reef-backdrop')
+      .setOrigin(0).setDisplaySize(this.reefBackdropWidth, reefHeight).setDepth(1)
       .setMask(this.oceanMask);
 
     const blendHeight = Math.min(130, reefHeight * .24);
@@ -511,6 +555,12 @@ class ReelScene extends Phaser.Scene {
     this.reefBlend.fillGradientStyle(
       seaColor, seaColor, seaColor, seaColor, .98, .98, 0, 0,
     ).fillRect(0, this.reefBackdropBaseY, OCEAN_CONTENT_WIDTH, blendHeight);
+  }
+
+  private backdropOffset(displayWidth: number): number {
+    const overflow = Math.max(0, displayWidth - W);
+    const travel = Math.max(1, OCEAN_SIDE_RANGE * 2);
+    return overflow * Phaser.Math.Clamp(this.oceanXOffset / travel, 0, 1);
   }
 
   private createOceanDepthControls(): void {
@@ -570,11 +620,11 @@ class ReelScene extends Phaser.Scene {
     );
     const surfaceY = Math.max(0, WATER_Y - this.oceanDepthOffset);
     this.oceanMaskShape.clear().fillStyle(0xffffff).fillRect(0, surfaceY, W, H - surfaceY);
-    this.skyBackdrop.x = -this.oceanXOffset;
+    this.skyBackdrop.x = -this.backdropOffset(this.skyBackdropWidth);
     this.skyBackdrop.y = WATER_Y + SKY_BACKDROP_Y_OFFSET - this.oceanDepthOffset;
     this.oceanDepthFill.x = -this.oceanXOffset;
     this.oceanDepthFill.y = -this.oceanDepthOffset;
-    this.reefBackdrop.x = -this.oceanXOffset;
+    this.reefBackdrop.x = -this.backdropOffset(this.reefBackdropWidth);
     this.reefBackdrop.y = this.reefBackdropBaseY - this.oceanDepthOffset;
     this.reefBlend.x = -this.oceanXOffset;
     this.reefBlend.y = -this.oceanDepthOffset;
@@ -1550,6 +1600,21 @@ const game = new Phaser.Game({
   loader: { imageLoadType: 'HTMLImageElement' },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: ReelScene,
+});
+
+let resizeTimer: number | undefined;
+window.addEventListener('resize', () => {
+  window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    const nextWidth = Math.max(SIDEBAR_MODE ? 280 : 320, Math.round(window.innerWidth));
+    const nextHeight = Math.max(SIDEBAR_MODE ? 440 : 360, Math.round(window.innerHeight));
+    if (nextWidth === W && nextHeight === H) return;
+
+    updateViewportMetrics();
+    game.scale.resize(W, H);
+    const reel = game.scene.getScene('reel');
+    if (reel?.scene.isActive()) reel.scene.restart();
+  }, 140);
 });
 
 // Keep movement hotkeys from consuming letters while the captain is being named.

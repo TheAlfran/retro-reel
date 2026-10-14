@@ -2,6 +2,15 @@ import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import type { Progress, FishDefinition, RodDefinition, BaitDefinition, BoatDefinition, PanelName, SkillKey } from './main';
 import './panels.css';
 
+const captainPortrait = new URL('./assets/starter-captain.png', import.meta.url).href;
+const inventorySpriteSheet = new URL('./assets/inventory-icons-v3.png', import.meta.url).href;
+
+type InventorySprite = 'bag' | 'fish' | 'rod' | 'bait' | 'boat' | 'star' | 'coin' | 'gear';
+
+function inventorySprite(kind: InventorySprite): string {
+  return `<i class="inventory-sprite sprite-${kind}" style="background-image:url('${inventorySpriteSheet}')" aria-hidden="true"></i>`;
+}
+
 type Icon = keyof typeof HUD_ICONS | 'fish' | 'bait' | 'coin' | SkillKey;
 export const SKILLS: { key: SkillKey; name: string; detail: string; parent?: SkillKey }[] = [
   { key: 'focus', name: 'Steady hand', detail: '+3.5% catch-zone width per rank.' },
@@ -95,6 +104,7 @@ export class PanelUI {
   }
 
   hide(): void { this.overlay.hidden = true; this.overlay.replaceChildren(); this.previousFocus?.focus(); }
+  destroy(): void { this.overlay.remove(); this.previousFocus = null; }
   refresh(model: PanelModel): void { this.model = model; if (!this.overlay.hidden) this.render(); }
 
   private button(label: string, action: string, disabled = false, extra = ''): string {
@@ -115,9 +125,10 @@ export class PanelUI {
     const content = this.panel === 'skills' ? this.skills() : this.panel === 'shop' ? this.shop()
       : this.panel === 'character' ? this.profile() : this.panel === 'boat' ? this.boat() : this.collection();
     const [title, subtitle] = titles[this.panel];
+    const footer = this.panel === 'inventory' ? '' : `<footer class="panel-footer"><span class="panel-message" role="status">${escape(this.message || (this.panel === 'skills' ? 'Select a talent to inspect its next rank.' : 'Select a slot to see its details.'))}</span><span class="escape-hint"><kbd>ESC</kbd><span>CLOSE</span></span></footer>`;
     this.overlay.innerHTML = `<section class="pixel-panel ${this.panel === 'skills' ? 'talent-panel' : ''}" role="dialog" aria-modal="true" aria-labelledby="panel-title" data-panel="${this.panel}">
       <header class="panel-header"><div class="panel-title-icon">${icon(this.panel)}</div><div><h2 id="panel-title">${title}</h2><p>${subtitle}</p></div><button class="panel-close" data-action="close" aria-label="Close panel">×</button></header>
-      <div class="panel-body">${content}</div><footer class="panel-footer"><span class="panel-message" role="status">${escape(this.message || (this.panel === 'skills' ? 'Select a talent to inspect its next rank.' : 'Select a slot to see its details.'))}</span><span class="escape-hint">ESC · CLOSE</span></footer>
+      <div class="panel-body">${content}</div>${footer}
     </section>`;
     const body = this.overlay.querySelector('.panel-body'); if (body) body.scrollTop = scroll;
     if (focus) {
@@ -167,46 +178,46 @@ export class PanelUI {
     const total = Object.values(p.fishInventory).reduce((sum, count) => sum + count, 0);
     const slots = caught.map(item => this.slot(
       item.id,
-      icon('fish', item.color),
+      inventorySprite('fish'),
       item.name,
       `×${p.fishInventory[item.id]}`,
     ));
     while (slots.length < 30) slots.push('<div class="item-slot empty" aria-hidden="true"></div>');
 
     const equipped = [
-      ['cast', 'Rod', rods[p.rodLevel - 1]?.name ?? 'Starter rod'],
+      ['rod', 'Rod', rods[p.rodLevel - 1]?.name ?? 'Starter rod'],
       ['bait', 'Bait', baits[p.selectedBait]?.name ?? 'No bait'],
       ['boat', 'Boat', boats[p.hullLevel - 1]?.name ?? 'Starter boat'],
-      ['inventory', 'Bag', `${total} fish`],
-    ] as Array<[Icon, string, string]>;
-    const statItems: Array<[Icon, string, number]> = [
-      ['focus', 'Focus', p.focus + p.rodLevel],
-      ['cast', 'Fishing', p.rodLevel * 3],
-      ['luck', 'Luck', p.luck + 1],
-      ['efficiency', 'Speed', p.efficiency + p.automation + 1],
+      ['bag', 'Bag', `${total} / 30`],
+    ] as Array<[InventorySprite, string, string]>;
+    const statItems: Array<[InventorySprite, string, number]> = [
+      ['gear', 'Focus', p.focus + p.rodLevel],
+      ['rod', 'Fishing', p.rodLevel * 3],
+      ['star', 'Luck', p.luck + 1],
+      ['gear', 'Speed', p.efficiency + p.automation + 1],
       ['boat', 'Hull', p.hullLevel * 2],
     ];
     const details = selected
-      ? `<div class="inventory-detail-art">${icon('fish', selected.color)}</div><div class="inventory-detail-copy"><span>${escape(selected.rarity)} CATCH</span><h3>${escape(selected.name)}</h3><p>Caught ${p.fishInventory[selected.id]} time${p.fishInventory[selected.id] === 1 ? '' : 's'}. Worth ${selected.value} coins and ${selected.xp} XP per catch.</p></div>`
-      : `<div class="inventory-detail-art">${icon('inventory')}</div><div class="inventory-detail-copy"><span>EMPTY SATCHEL</span><h3>Your first catch awaits</h3><p>Close the inventory and cast a line to fill these slots.</p></div>`;
+      ? `<header class="catch-card-header"><span>SELECTED CATCH</span><strong>${escape(selected.rarity.replace(/\s+[IVX]+$/, ''))}</strong></header><div class="inventory-detail-body"><div class="inventory-detail-art">${inventorySprite('fish')}<span>×${p.fishInventory[selected.id]}</span></div><div class="inventory-detail-copy"><h3>${escape(selected.name)}</h3><p class="catch-summary">A dependable harbor catch, safely stored and ready to sell.</p><div class="catch-metrics"><span><small>TOTAL CAUGHT</small><strong>${p.fishInventory[selected.id]}</strong></span><span><small>SELL VALUE</small><strong>${selected.value}<em> COINS</em></strong></span><span><small>EXPERIENCE</small><strong>${selected.xp}<em> XP</em></strong></span></div></div></div>`
+      : `<div class="inventory-detail-art">${inventorySprite('bag')}</div><div class="inventory-detail-copy"><span>EMPTY SATCHEL</span><h3>Your first catch awaits</h3><p>Close the inventory and cast a line to fill these slots.</p></div>`;
 
-    return `<div class="inventory-tabs" aria-label="Inventory sections"><span class="active">${icon('inventory')} INVENTORY</span><span>${icon('character')} EQUIPMENT</span><span>${icon('skills')} TALENTS</span><span class="inventory-coins">${icon('coin')} ${p.coins}</span></div>
+    return `<div class="inventory-tabs" aria-label="Inventory sections"><span class="active">${inventorySprite('bag')} INVENTORY</span><span>${inventorySprite('gear')} EQUIPMENT</span><span>${inventorySprite('star')} TALENTS</span><span class="inventory-coins">${inventorySprite('coin')} <strong>${p.coins}</strong></span></div>
       <div class="inventory-workbench">
         <section class="inventory-bag" aria-label="Catch inventory">
-          <div class="inventory-categories"><span class="active">${icon('fish')} ALL</span><span>${icon('cast')} RODS</span><span>${icon('bait')} BAIT</span><span>${icon('boat')} GEAR</span></div>
+          <div class="inventory-categories"><span class="active">${inventorySprite('fish')} ALL</span><span>${inventorySprite('rod')} RODS</span><span>${inventorySprite('bait')} BAIT</span><span>${inventorySprite('boat')} GEAR</span></div>
           <div class="item-grid">${slots.join('')}</div>
           <div class="inventory-capacity"><span>${caught.length} / ${fish.length} SPECIES</span><span>${total} FISH STORED</span></div>
         </section>
         <section class="inventory-character" aria-label="Captain equipment and stats">
-          <h3 class="inventory-section-title">CAPTAIN</h3>
+          <h3 class="inventory-section-title"><span>CAPTAIN</span><small>LOADOUT &amp; PROFILE</small></h3>
           <div class="character-loadout">
-            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${icon(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
-            <div class="inventory-portrait">${icon('character')}<strong>${escape(p.captainName || 'Captain')}</strong><span>LEVEL ${p.level}</span></div>
-            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${icon(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="inventory-portrait"><img src="${captainPortrait}" alt=""><strong>${escape(p.captainName || 'Captain')}</strong><span>LEVEL ${p.level}</span></div>
+            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
           </div>
-          <h3 class="inventory-section-title stats-title">STATS</h3>
-          <div class="inventory-stats">${statItems.map(([kind,label,value]) => `<div>${icon(kind)}<span>${label}</span><strong>${value}</strong></div>`).join('')}</div>
-          <article class="inventory-selected">${details}</article>
+          <h3 class="inventory-section-title stats-title"><span>STATS</span><small>CORE ATTRIBUTES</small></h3>
+          <div class="inventory-stats">${statItems.map(([kind,label,value]) => `<div>${inventorySprite(kind)}<span>${label}</span><strong>${value}</strong></div>`).join('')}</div>
+          <article class="inventory-selected${selected ? ' has-catch' : ''}">${details}</article>
         </section>
       </div>`;
   }
