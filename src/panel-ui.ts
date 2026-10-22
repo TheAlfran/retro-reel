@@ -1,6 +1,7 @@
 import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import type { Progress, FishDefinition, RodDefinition, BaitDefinition, BoatDefinition, PanelName, SkillKey } from './main';
 import './panels.css';
+import { baitSprite, fishSprite } from './sprite-art';
 
 const captainPortrait = new URL('./assets/starter-captain.png', import.meta.url).href;
 const inventorySpriteSheet = new URL('./assets/inventory-icons-v3.png', import.meta.url).href;
@@ -73,7 +74,6 @@ export class PanelUI {
   private model!: PanelModel;
   private selected = '';
   private category: 'rods' | 'bait' = 'rods';
-  private message = '';
   private previousFocus: HTMLElement | null = null;
 
   constructor(private action: (action: PanelAction) => string | void, private close: () => void) {
@@ -96,7 +96,7 @@ export class PanelUI {
   }
 
   show(panel: PanelName, model: PanelModel, category: 'rods' | 'bait'): void {
-    this.panel = panel; this.model = model; this.category = category; this.selected = ''; this.message = '';
+    this.panel = panel; this.model = model; this.category = category; this.selected = '';
     this.previousFocus = document.activeElement as HTMLElement | null;
     this.overlay.hidden = false;
     this.render();
@@ -125,10 +125,9 @@ export class PanelUI {
     const content = this.panel === 'skills' ? this.skills() : this.panel === 'shop' ? this.shop()
       : this.panel === 'character' ? this.profile() : this.panel === 'boat' ? this.boat() : this.collection();
     const [title, subtitle] = titles[this.panel];
-    const footer = this.panel === 'inventory' ? '' : `<footer class="panel-footer"><span class="panel-message" role="status">${escape(this.message || (this.panel === 'skills' ? 'Select a talent to inspect its next rank.' : 'Select a slot to see its details.'))}</span><span class="escape-hint"><kbd>ESC</kbd><span>CLOSE</span></span></footer>`;
     this.overlay.innerHTML = `<section class="pixel-panel ${this.panel === 'skills' ? 'talent-panel' : ''}" role="dialog" aria-modal="true" aria-labelledby="panel-title" data-panel="${this.panel}">
       <header class="panel-header"><div class="panel-title-icon">${icon(this.panel)}</div><div><h2 id="panel-title">${title}</h2><p>${subtitle}</p></div><button class="panel-close" data-action="close" aria-label="Close panel">×</button></header>
-      <div class="panel-body">${content}</div>${footer}
+      <div class="panel-body">${content}</div>
     </section>`;
     const body = this.overlay.querySelector('.panel-body'); if (body) body.scrollTop = scroll;
     if (focus) {
@@ -148,12 +147,12 @@ export class PanelUI {
     const total = Object.values(p.fishInventory).reduce((sum, count) => sum + count, 0);
     const slots = source.map(f => {
       const found = (p.fishInventory[f.id] ?? 0) > 0;
-      return this.slot(f.id, icon('fish', f.color, !found), found ? f.name : 'Undiscovered fish', found ? `×${p.fishInventory[f.id]}` : '?', found ? '' : 'undiscovered');
+      return this.slot(f.id, fishSprite(f.id, !found), found ? f.name : 'Undiscovered fish', found ? `×${p.fishInventory[f.id]}` : '?', found ? '' : 'undiscovered');
     });
     const capacity = Math.max(20, Math.ceil(slots.length / 10) * 10);
     while (slots.length < capacity) slots.push('<div class="item-slot empty" aria-hidden="true"><span></span></div>');
     const found = selected && (p.fishInventory[selected.id] ?? 0) > 0;
-    const details = selected ? this.detail(icon('fish', selected.color, !found), found ? selected.rarity : 'Uncharted waters', found ? selected.name : 'Unknown species',
+    const details = selected ? this.detail(fishSprite(selected.id, !found), found ? selected.rarity : 'Uncharted waters', found ? selected.name : 'Unknown species',
       found ? `Caught ${p.fishInventory[selected.id]} times. A permanent entry in your fishing journal.` : 'Equip the right tackle and boat to discover this fish.',
       `<dl class="detail-stats"><div><dt>Base value</dt><dd>${found ? selected.value + ' coins' : '???'}</dd></div><div><dt>Experience</dt><dd>${found ? selected.xp + ' XP' : '???'}</dd></div></dl><div class="requirements"><span>ROD ${selected.minRod}</span><span>BOAT ${selected.minBoat}</span><span>BAIT ${selected.minBait}</span></div>${selected.requirement ? `<p class="special-note">${escape(selected.requirement)}</p>` : ''}`)
       : this.detail(icon('inventory'), 'Ready for adventure', 'An empty satchel', 'Your first catch belongs here. Close the satchel and cast a line to start your collection.', '<span class="small-note">Caught fish stay in your collection.</span>');
@@ -178,7 +177,7 @@ export class PanelUI {
     const total = Object.values(p.fishInventory).reduce((sum, count) => sum + count, 0);
     const slots = caught.map(item => this.slot(
       item.id,
-      inventorySprite('fish'),
+      fishSprite(item.id),
       item.name,
       `×${p.fishInventory[item.id]}`,
     ));
@@ -198,7 +197,7 @@ export class PanelUI {
       ['boat', 'Hull', p.hullLevel * 2],
     ];
     const details = selected
-      ? `<header class="catch-card-header"><span>SELECTED CATCH</span><strong>${escape(selected.rarity.replace(/\s+[IVX]+$/, ''))}</strong></header><div class="inventory-detail-body"><div class="inventory-detail-art">${inventorySprite('fish')}<span>×${p.fishInventory[selected.id]}</span></div><div class="inventory-detail-copy"><h3>${escape(selected.name)}</h3><p class="catch-summary">A dependable harbor catch, safely stored and ready to sell.</p><div class="catch-metrics"><span><small>TOTAL CAUGHT</small><strong>${p.fishInventory[selected.id]}</strong></span><span><small>SELL VALUE</small><strong>${selected.value}<em> COINS</em></strong></span><span><small>EXPERIENCE</small><strong>${selected.xp}<em> XP</em></strong></span></div></div></div>`
+      ? `<header class="catch-card-header"><span>SELECTED CATCH</span><strong>${escape(selected.rarity.replace(/\s+[IVX]+$/, ''))}</strong></header><div class="inventory-detail-body"><div class="inventory-detail-art">${fishSprite(selected.id)}<span>×${p.fishInventory[selected.id]}</span></div><div class="inventory-detail-copy"><h3>${escape(selected.name)}</h3><p class="catch-summary">A dependable harbor catch, safely stored and ready to sell.</p><div class="catch-metrics"><span><small>TOTAL CAUGHT</small><strong>${p.fishInventory[selected.id]}</strong></span><span><small>SELL VALUE</small><strong>${selected.value}<em> COINS</em></strong></span><span><small>EXPERIENCE</small><strong>${selected.xp}<em> XP</em></strong></span></div></div></div>`
       : `<div class="inventory-detail-art">${inventorySprite('bag')}</div><div class="inventory-detail-copy"><span>EMPTY SATCHEL</span><h3>Your first catch awaits</h3><p>Close the inventory and cast a line to fill these slots.</p></div>`;
 
     return `<div class="inventory-tabs" aria-label="Inventory sections"><span class="active">${inventorySprite('bag')} INVENTORY</span><span>${inventorySprite('gear')} EQUIPMENT</span><span>${inventorySprite('star')} TALENTS</span><span class="inventory-coins">${inventorySprite('coin')} <strong>${p.coins}</strong></span></div>
@@ -211,9 +210,9 @@ export class PanelUI {
         <section class="inventory-character" aria-label="Captain equipment and stats">
           <h3 class="inventory-section-title"><span>CAPTAIN</span><small>LOADOUT &amp; PROFILE</small></h3>
           <div class="character-loadout">
-            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
             <div class="inventory-portrait"><img src="${captainPortrait}" alt=""><strong>${escape(p.captainName || 'Captain')}</strong><span>LEVEL ${p.level}</span></div>
-            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
           </div>
           <h3 class="inventory-section-title stats-title"><span>STATS</span><small>CORE ATTRIBUTES</small></h3>
           <div class="inventory-stats">${statItems.map(([kind,label,value]) => `<div>${inventorySprite(kind)}<span>${label}</span><strong>${value}</strong></div>`).join('')}</div>
@@ -232,14 +231,14 @@ export class PanelUI {
     const locked = rod && item.tier > p.rodLevel + 1;
     const equipped = !rod && p.selectedBait === item.tier - 1;
     const stock = p.baitStock[item.tier - 1] ?? 0;
-    const slots = source.map(item => this.slot(`${this.category}-${item.tier}`, icon(rod ? 'cast' : 'bait', item.color), item.name,
+    const slots = source.map(item => this.slot(`${this.category}-${item.tier}`, rod ? inventorySprite('rod') : baitSprite(item.tier), item.name,
       rod ? item.tier <= p.rodLevel ? '✓' : `T${item.tier}` : `×${p.baitStock[item.tier - 1] ?? 0}`,
       rod && item.tier > p.rodLevel + 1 ? 'locked-slot' : ''));
     while (slots.length < 15) slots.push('<div class="item-slot empty" aria-hidden="true"><span>·</span></div>');
     const purchase = this.button(owned ? 'OWNED' : locked ? 'PREVIOUS ROD REQUIRED' : `BUY · ${item.cost} COINS`, `buy-${item.tier}`, owned || locked || p.coins < item.cost);
-    return `<div class="panel-toolbar"><div class="panel-tabs">${this.button('RODS', 'tab-rods', false, rod ? 'active' : '')}${this.button('BAIT', 'tab-bait', false, !rod ? 'active' : '')}</div><span class="wallet">${icon('coin')} ${p.coins}</span></div>
+    return `<div class="panel-toolbar"><div class="panel-tabs">${this.button('RODS', 'tab-rods', false, rod ? 'active' : '')}${this.button('BAIT', 'tab-bait', false, !rod ? 'active' : '')}</div><span class="wallet">${inventorySprite('coin')} ${p.coins}</span></div>
       <div class="collection-layout"><div><div class="item-grid">${slots.join('')}</div><div class="grid-caption">${rod ? 'Upgrade rods in order to reach rarer fish.' : `Every tin contains ${3 + p.frugality} bait.`}</div></div>
-      ${this.detail(icon(rod ? 'cast' : 'bait', item.color), `${item.rarity} / TIER ${item.tier}`, item.name,
+      ${this.detail(rod ? inventorySprite('rod') : baitSprite(item.tier), `${item.rarity} / TIER ${item.tier}`, item.name,
         rod ? `Unlocks fish requiring a tier ${item.tier} rod. Each rod also widens the catch zone.` : `Tier ${item.tier} bait attracts new species. One bait is used per cast.`,
         `<dl class="detail-stats"><div><dt>${rod ? 'Status' : 'In your bag'}</dt><dd>${rod ? owned ? 'Owned' : locked ? 'Locked' : 'Available' : stock}</dd></div><div><dt>${rod ? 'Cost' : 'Per tin'}</dt><dd>${rod ? item.cost + ' coins' : (3 + p.frugality) + ' bait'}</dd></div></dl><div class="detail-actions">${purchase}${!rod ? this.button(equipped ? 'EQUIPPED' : 'EQUIP BAIT', `equip-${item.tier}`, equipped || stock === 0, 'secondary') : ''}</div>${!owned && !locked && p.coins < item.cost ? '<p class="small-note">Catch more fish to earn the remaining coins.</p>' : ''}`)}
       </div>`;
@@ -272,11 +271,11 @@ export class PanelUI {
   private profile(): string {
     const { progress: p, streak, autoFishing, fish, rods, baits, boats } = this.model;
     const discovered = fish.filter(f => (p.fishInventory[f.id] ?? 0) > 0).length;
-    return `<div class="captain-banner"><div class="portrait-slot">${icon('character')}</div><div><span class="eyebrow">LEVEL ${p.level} CAPTAIN</span><h3>${escape(p.captainName || 'Captain')}</h3><label class="xp-label" for="captain-xp">${p.xp} / ${p.level * 100} XP</label><progress id="captain-xp" max="${p.level * 100}" value="${p.xp}"></progress></div></div>
+    return `<div class="captain-banner"><div class="portrait-slot"><img src="${captainPortrait}" alt=""></div><div><span class="eyebrow">LEVEL ${p.level} CAPTAIN</span><h3>${escape(p.captainName || 'Captain')}</h3><label class="xp-label" for="captain-xp">${p.xp} / ${p.level * 100} XP</label><progress id="captain-xp" max="${p.level * 100}" value="${p.xp}"></progress></div></div>
       <div class="stat-grid">${[['COINS',p.coins],['CATCHES',p.catches],['COLLECTION',`${discovered}/${fish.length}`],['STREAK',streak],['BEST STREAK',p.bestStreak],['TALENT POINTS',p.skillPoints]].map(([label,value]) => `<div class="stat-tile"><strong>${value}</strong><span>${label}</span></div>`).join('')}</div>
       <h4 class="section-label">EQUIPPED FOR THE VOYAGE</h4><div class="equipment-grid">${[
-        ['cast', rods[p.rodLevel - 1].name, `TIER ${p.rodLevel} ROD`], ['bait', baits[p.selectedBait].name, `${p.baitStock[p.selectedBait]} REMAINING`], ['boat', boats[p.hullLevel - 1].name, `TIER ${p.hullLevel} BOAT`],
-      ].map(([kind,name,label]) => `<div class="equipment-card">${icon(kind as Icon)}<div><strong>${escape(name)}</strong><span>${label}</span></div></div>`).join('')}</div>
+        ['rod', rods[p.rodLevel - 1].name, `TIER ${p.rodLevel} ROD`], ['bait', baits[p.selectedBait].name, `${p.baitStock[p.selectedBait]} REMAINING`], ['boat', boats[p.hullLevel - 1].name, `TIER ${p.hullLevel} BOAT`],
+      ].map(([kind,name,label]) => `<div class="equipment-card">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind as InventorySprite)}<div><strong>${escape(name)}</strong><span>${label}</span></div></div>`).join('')}</div>
       <div class="auto-setting"><div><strong>Auto fishing</strong><p>Keep casting while you watch the waves.</p></div><button class="pixel-button auto-switch ${autoFishing ? 'active' : ''}" data-action="auto" role="switch" aria-checked="${autoFishing}">${autoFishing ? 'ON' : 'OFF'}</button></div>`;
   }
 
@@ -287,24 +286,24 @@ export class PanelUI {
     const owned = boat.tier <= p.hullLevel;
     const locked = boat.tier > p.hullLevel + 1;
     const hull = `<svg class="ship-preview" viewBox="0 0 160 90" shape-rendering="crispEdges" aria-hidden="true"><path fill="#76b8b5" d="M0 66h160v24H0z"/><path fill="#d6e6c2" d="M5 73h40v2H5zM72 79h45v2H72zM122 71h30v2h-30z"/><path fill="#302f30" d="M76 6h4v52h-4z"/><path fill="#efe0b3" d="M83 11v36h39V42h-6v-7h-8v-8H98v-8h-8v-8z"/><path fill="${hex(boat.hull)}" stroke="#302f30" stroke-width="3" d="M28 53h108l-12 18H44z"/><path fill="${hex(boat.trim)}" d="M30 54h104v5H33z"/><path fill="#b78a55" d="M47 44h22v10H47z"/></svg>`;
-    return `<div class="panel-toolbar"><span>FLEET · ${p.hullLevel} / ${boats.length}</span><span class="wallet">${icon('coin')} ${p.coins}</span></div><div class="collection-layout"><div><div class="ship-display">${hull}<span>${escape(boat.name)}</span></div><div class="boat-slots">${boats.map(b => this.slot(String(b.tier), icon('boat'), b.name, `T${b.tier}`, b.tier > p.hullLevel + 1 ? 'locked-slot' : '')).join('')}</div><div class="grid-caption">Each hull opens up a new horizon.</div></div>${this.detail(icon('boat'), `TIER ${boat.tier} / ${owned ? 'OWNED' : locked ? 'LOCKED' : 'NEXT UPGRADE'}`, boat.name, boat.bonus,
+    return `<div class="panel-toolbar"><span>FLEET · ${p.hullLevel} / ${boats.length}</span><span class="wallet">${inventorySprite('coin')} ${p.coins}</span></div><div class="collection-layout"><div><div class="ship-display">${hull}<span>${escape(boat.name)}</span></div><div class="boat-slots">${boats.map(b => this.slot(String(b.tier), inventorySprite('boat'), b.name, `T${b.tier}`, b.tier > p.hullLevel + 1 ? 'locked-slot' : '')).join('')}</div><div class="grid-caption">Each hull opens up a new horizon.</div></div>${this.detail(inventorySprite('boat'), `TIER ${boat.tier} / ${owned ? 'OWNED' : locked ? 'LOCKED' : 'NEXT UPGRADE'}`, boat.name, boat.bonus,
       `<dl class="detail-stats"><div><dt>Upgrade cost</dt><dd>${boat.cost} coins</dd></div><div><dt>Your vessel</dt><dd>${escape(boats[p.hullLevel - 1].name)}</dd></div></dl>${this.button(owned ? boat.tier === p.hullLevel ? 'CURRENT VESSEL' : 'OWNED' : locked ? 'PREVIOUS BOAT REQUIRED' : 'UPGRADE VESSEL', 'boat', owned || locked || p.coins < boat.cost)}${!owned && !locked && p.coins < boat.cost ? '<p class="small-note">Earn more coins to commission this vessel.</p>' : ''}`)}</div>`;
   }
 
   private onClick(event: MouseEvent): void {
     const target = (event.target as Element).closest<HTMLButtonElement>('button');
     if (!target || target.disabled) return;
-    if (target.dataset.select) { this.selected = target.dataset.select; this.message = ''; this.render(); return; }
+    if (target.dataset.select) { this.selected = target.dataset.select; this.render(); return; }
     const command = target.dataset.action;
     if (command === 'close') { this.close(); return; }
-    if (command?.startsWith('tab-')) { this.category = command === 'tab-rods' ? 'rods' : 'bait'; this.selected = ''; this.message = ''; this.render(); return; }
+    if (command?.startsWith('tab-')) { this.category = command === 'tab-rods' ? 'rods' : 'bait'; this.selected = ''; this.render(); return; }
     let action: PanelAction | undefined;
     if (command === 'learn') action = { type: 'skill', key: this.selected as SkillKey };
     if (command === 'auto' || command === 'boat') action = { type: command };
     if (command?.startsWith('buy-')) action = { type: this.category === 'rods' ? 'rod' : 'bait', tier: Number(command.slice(4)) };
     if (command?.startsWith('equip-')) action = { type: 'equip', tier: Number(command.slice(6)) };
     if (action) {
-      this.message = this.action(action) || '';
+      this.action(action);
       if (action.type === 'auto') this.model.autoFishing = !this.model.autoFishing;
       this.render();
     }

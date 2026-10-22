@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import { PanelUI, SKILLS, type PanelAction } from './panel-ui';
+import { baitSpriteUrl, fishSpriteUrl } from './sprite-art';
 import './style.css';
 
 const SIDEBAR_MODE = document.body.classList.contains('vscode-sidebar');
@@ -70,6 +71,13 @@ interface CatchResult {
   value: number;
   xp: number;
   color: string;
+}
+
+interface BaitHotbarSlot {
+  frame: Phaser.GameObjects.Graphics;
+  art: Phaser.GameObjects.Image;
+  count: Phaser.GameObjects.Text;
+  lock: Phaser.GameObjects.Graphics;
 }
 
 export interface FishDefinition extends CatchResult {
@@ -248,6 +256,12 @@ class ReelScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private castButtonText!: Phaser.GameObjects.Text;
   private autoIndicator!: Phaser.GameObjects.Rectangle;
+  private autoModeFrame?: Phaser.GameObjects.Graphics;
+  private manualModeFrame?: Phaser.GameObjects.Graphics;
+  private baitHotbarSlots: BaitHotbarSlot[] = [];
+  private fishingControlsTop = 0;
+  private fishingModeLeft = 0;
+  private fishingControlsBottom = 0;
   private profileStats?: Phaser.GameObjects.Text;
   private timingPanel!: Phaser.GameObjects.Container;
   private timingZone!: Phaser.GameObjects.Rectangle;
@@ -286,6 +300,8 @@ class ReelScene extends Phaser.Scene {
     this.load.image('starter-rod', new URL('./assets/starter-rod.png', import.meta.url).href);
     this.load.image('ambient-fish-sprites', new URL('./assets/ambient-fish-sprites.png', import.meta.url).href);
     this.load.image('reef-backdrop', new URL('./assets/reef-backdrop-expanded-v2.png', import.meta.url).href);
+    FISH.forEach(fish => this.load.image(`fish-${fish.id}`, fishSpriteUrl(fish.id)));
+    BAITS.forEach(bait => this.load.image(`bait-${bait.tier}`, baitSpriteUrl(bait.tier)));
   }
 
   create(): void {
@@ -301,6 +317,8 @@ class ReelScene extends Phaser.Scene {
     this.progress = readProgress();
     this.panelUI = new PanelUI(action => this.handlePanelAction(action), () => this.closePanel());
     if (!this.textures.exists('fish')) this.createTextures();
+    FISH.forEach(fish => this.textures.get(`fish-${fish.id}`).setFilter(Phaser.Textures.FilterMode.NEAREST));
+    BAITS.forEach(bait => this.textures.get(`bait-${bait.tier}`).setFilter(Phaser.Textures.FilterMode.NEAREST));
     const ambientFish = this.textures.get('ambient-fish-sprites');
     ambientFish.setFilter(Phaser.Textures.FilterMode.NEAREST);
     // The generated fish are intentionally spaced by silhouette rather than
@@ -737,7 +755,207 @@ class ReelScene extends Phaser.Scene {
     (['character', 'skills', 'boat'] as const).forEach((panel, index) => {
       this.createHudIcon(W - edge - size / 2, top + index * step, size, panel);
     });
-    this.createHudIcon(W - edge - size / 2 - step, top, size, 'cast');
+    this.createFishingControls();
+    this.createBaitHotbar();
+  }
+
+  private createFishingControls(): void {
+    // Scale one reference-sized group, including its rings and spacing, so the
+    // mode buttons and circle retain their proportions in the narrow sidebar.
+    const sideMargin = Phaser.Math.Clamp(W * .04, 18, 36);
+    const scale = Math.min(1.35, Math.max(1, W / 520), H / 420, (W - sideMargin * 2) / 344);
+    const radius = 54 * scale;
+    const diameter = radius * 2;
+    const modeWidth = 90 * scale;
+    const modeHeight = 32 * scale;
+    const gap = 10 * scale;
+    const x = W - sideMargin - 67 * scale;
+    const sharedBottom = H - Phaser.Math.Clamp(H * .235, 120, 170);
+    const y = sharedBottom - radius - 18 * scale;
+    this.fishingControlsTop = y - radius - 18 * scale;
+    this.fishingControlsBottom = sharedBottom;
+
+    const rings = this.add.graphics();
+    const drawFishButton = (hover = false, pressed = false): void => {
+      rings.clear();
+      const offset = pressed ? 2 * scale : 0;
+      rings.fillStyle(0x092138, .48).fillCircle(2 * scale, 4 * scale, radius + 3 * scale);
+      rings.lineStyle(1.3 * scale, 0xc5edff, .95).strokeCircle(0, 0, radius + 8 * scale);
+      rings.lineStyle(1.4 * scale, 0x93d8ff, .55).beginPath()
+        .arc(0, 0, radius + 13 * scale, -.2, 2.6).strokePath();
+      rings.lineStyle(1.4 * scale, 0x93d8ff, .55).beginPath()
+        .arc(0, 0, radius + 18 * scale, 3.5, 4.8).strokePath();
+      rings.fillStyle(0x9e491a).fillCircle(0, offset + 2 * scale, radius);
+      rings.fillStyle(0xffd36b).fillCircle(0, offset, radius);
+      // Horizontal slices produce a warm top-to-bottom gradient within a circle.
+      const inner = radius - 4 * scale;
+      for (let row = -inner; row < inner; row++) {
+        const t = (row + inner) / (inner * 2);
+        const halfWidth = Math.sqrt(Math.max(0, inner * inner - row * row));
+        const color = Phaser.Display.Color.Interpolate.ColorWithColor(
+          Phaser.Display.Color.ValueToColor(hover ? 0xffce59 : 0xffbd3c),
+          Phaser.Display.Color.ValueToColor(pressed ? 0xe88713 : 0xf69412), 100, t * 100,
+        );
+        rings.fillStyle(Phaser.Display.Color.GetColor(color.r, color.g, color.b))
+          .fillRect(-halfWidth, row + offset, halfWidth * 2, 1.2);
+      }
+      rings.lineStyle(2.5 * scale, 0xfff0b1).beginPath()
+        .arc(0, offset, radius - 2 * scale, Math.PI, Math.PI * 1.92).strokePath();
+      rings.lineStyle(2.5 * scale, 0xffdc6e, .9).beginPath()
+        .arc(0, offset, radius - 10 * scale, 3.65, 4.05).strokePath();
+      rings.fillStyle(0xb4eaff, .9).fillCircle(-radius - 17 * scale, -7 * scale, 2.5 * scale);
+    };
+    drawFishButton();
+
+    const fishIcon = this.add.graphics();
+    const rod = new Phaser.Curves.QuadraticBezier(
+      new Phaser.Math.Vector2(-24, 18), new Phaser.Math.Vector2(-9, -17), new Phaser.Math.Vector2(13, -29),
+    );
+    fishIcon.lineStyle(2.5, 0xfffbe6).strokePoints(rod.getPoints(24));
+    fishIcon.lineStyle(4, 0xfffbe6).lineBetween(-24, 18, -18, 7);
+    fishIcon.lineStyle(1.2, 0xfffbe6).lineBetween(13, -29, 13, 4);
+    fishIcon.lineStyle(1.8, 0xfffbe6).strokeCircle(-15, 11, 2.5);
+    fishIcon.fillStyle(0xfffbe6).fillEllipse(16, 8, 22, 14)
+      .fillTriangle(24, 8, 32, 0, 32, 16)
+      .fillTriangle(12, 3, 19, -2, 21, 4)
+      .fillTriangle(12, 13, 18, 19, 22, 12);
+    fishIcon.fillStyle(0xf5a027).fillCircle(10, 6, 1.5);
+    fishIcon.lineStyle(1.3, 0xf5a027).beginPath().arc(14, 8, 3, -.9, .9).strokePath();
+    fishIcon.setScale(scale);
+    fishIcon.y = -radius * .12;
+    this.castButtonText = this.add.text(0, radius * .43, 'FISH', {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: `${16 * scale}px`,
+      color: '#fffbe8', shadow: { offsetX: 1, offsetY: 2, color: '#ae631d', fill: true }, align: 'center',
+      wordWrap: { width: diameter * .78 },
+    }).setOrigin(.5);
+    const fishButton = this.add.container(x, y, [rings, fishIcon, this.castButtonText])
+      .setDepth(24).setSize(diameter, diameter)
+      .setInteractive(new Phaser.Geom.Circle(radius, radius, radius), Phaser.Geom.Circle.Contains)
+      .setName('cast');
+    fishButton.on('pointerover', () => drawFishButton(true));
+    fishButton.on('pointerout', () => { drawFishButton(); fishIcon.y = -radius * .12; });
+    fishButton.on('pointerdown', () => { drawFishButton(true, true); fishIcon.y = -radius * .12 + 2; });
+    fishButton.on('pointerup', () => {
+      drawFishButton(); fishIcon.y = -radius * .12;
+      if (this.profileReady && !this.activePanel) this.handleFishingAction();
+    });
+
+    const manualX = x - radius - 20 * scale - modeWidth / 2;
+    const autoX = manualX - modeWidth - gap;
+    const modeY = sharedBottom - modeHeight / 2;
+    this.fishingModeLeft = autoX - modeWidth / 2;
+    const createModeButton = (buttonX: number, label: string, auto: boolean): Phaser.GameObjects.Graphics => {
+      const frame = this.add.graphics();
+      const symbol = this.add.graphics().setPosition(-modeWidth / 2 + 17 * scale, 0).setScale(scale);
+      symbol.lineStyle(1.6, 0xf1fbff);
+      if (auto) {
+        const points = Array.from({ length: 41 }, (_, i) => {
+          const t = i / 40 * Math.PI * 2;
+          return new Phaser.Math.Vector2(7 * Math.cos(t), 3.5 * Math.sin(2 * t));
+        });
+        symbol.strokePoints(points);
+      } else {
+        symbol.strokeCircle(0, 0, 6);
+        symbol.lineBetween(-10, 0, -4, 0).lineBetween(4, 0, 10, 0)
+          .lineBetween(0, -10, 0, -4).lineBetween(0, 4, 0, 10);
+      }
+      const text = this.add.text(12 * scale, 0, label, {
+        fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: `${10 * scale}px`,
+        color: '#eefaff', align: 'center',
+      }).setOrigin(.5);
+      const button = this.add.container(buttonX, modeY, [frame, symbol, text])
+        .setDepth(24).setSize(modeWidth, modeHeight).setInteractive({ useHandCursor: true });
+      button.setName(auto ? 'auto-fish' : 'manual-fish');
+      button.on('pointerup', () => {
+        if (!this.profileReady || this.activePanel || this.autoFishing === auto) return;
+        this.toggleAutoFishing();
+      });
+      return frame;
+    };
+    this.autoModeFrame = createModeButton(autoX, 'Auto Fish', true);
+    this.manualModeFrame = createModeButton(manualX, 'Manual', false);
+    this.refreshFishingModeButtons(modeWidth, modeHeight);
+  }
+
+  private createBaitHotbar(): void {
+    this.baitHotbarSlots = [];
+    const gap = Phaser.Math.Clamp(W * .008, 3, 6);
+    const slotSize = Math.min(56, Math.max(42, (W - 28 - gap * (BAITS.length - 1)) / BAITS.length));
+    const totalWidth = slotSize * BAITS.length + gap * (BAITS.length - 1);
+    const centerX = W / 2;
+    const fitsBottomRow = centerX + totalWidth / 2 + 14 <= this.fishingModeLeft;
+    const centerY = fitsBottomRow
+      ? this.fishingControlsBottom - slotSize / 2
+      : Math.max(slotSize / 2 + 10, this.fishingControlsTop - slotSize / 2 - 8);
+
+    BAITS.forEach((bait, index) => {
+      const x = centerX - totalWidth / 2 + slotSize / 2 + index * (slotSize + gap);
+      const frame = this.add.graphics();
+      const art = this.add.image(0, 0, `bait-${bait.tier}`).setDisplaySize(slotSize * .88, slotSize * .88);
+      const lock = this.add.graphics();
+      const count = this.add.text(slotSize * .34, slotSize * .32, '', {
+        fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+        fontSize: `${Math.max(9, slotSize * .22)}px`, color: '#fff8db',
+        stroke: '#10253b', strokeThickness: 3,
+      }).setOrigin(1, 1);
+      const button = this.add.container(x, centerY, [frame, art, lock, count])
+        .setDepth(23).setSize(slotSize, slotSize).setName(`bait-${index + 1}`)
+        .setInteractive({ useHandCursor: true });
+      button.on('pointerup', () => {
+        if (!this.profileReady || this.activePanel) return;
+        const stock = this.progress.baitStock[index] ?? 0;
+        if (stock <= 0) {
+          this.flashStatus(`${bait.name.toUpperCase()} IS OUT OF STOCK`, '#ff8c72');
+          return;
+        }
+        this.progress.selectedBait = index;
+        this.progress.bait = stock;
+        saveProgress(this.progress);
+        this.updateHud();
+        this.flashStatus(`${bait.name.toUpperCase()} EQUIPPED`, bait.color);
+      });
+      this.baitHotbarSlots.push({ frame, art, count, lock });
+    });
+    this.refreshBaitHotbar();
+  }
+
+  private refreshBaitHotbar(): void {
+    if (!this.baitHotbarSlots.length) return;
+    this.baitHotbarSlots.forEach((slot, index) => {
+      const selected = index === this.progress.selectedBait;
+      const stock = this.progress.baitStock[index] ?? 0;
+      const size = slot.count.parentContainer?.width ?? 52;
+      const half = size / 2;
+      slot.frame.clear()
+        .fillStyle(0x061820, .42).fillRoundedRect(-half + 2, -half + 4, size, size, 6)
+        .fillStyle(selected ? 0x203c5f : 0x183654, .96).fillRoundedRect(-half, -half, size, size, 6)
+        .lineStyle(selected ? 3 : 2, selected ? 0xffdc62 : 0x75bde8)
+        .strokeRoundedRect(-half, -half, size, size, 6);
+      slot.art.setAlpha(stock > 0 ? 1 : .22);
+      slot.count.setText(stock > 0 ? String(stock) : '').setVisible(stock > 0);
+      slot.lock.clear().setVisible(stock <= 0);
+      if (stock <= 0) {
+        slot.lock.lineStyle(3, 0x7c9bb5).beginPath().arc(0, -4, 7, Math.PI, 0).strokePath();
+        slot.lock.fillStyle(0x7896ae).fillRoundedRect(-9, -4, 18, 16, 3);
+        slot.lock.fillStyle(0x20364a).fillCircle(0, 3, 2).fillRect(-1, 3, 2, 5);
+      }
+    });
+  }
+
+  private refreshFishingModeButtons(width?: number, height?: number): void {
+    if (!this.autoModeFrame || !this.manualModeFrame) return;
+    const draw = (frame: Phaser.GameObjects.Graphics, active: boolean): void => {
+      const w = width ?? frame.getData('width');
+      const h = height ?? frame.getData('height');
+      if (width && height) { frame.setData('width', width); frame.setData('height', height); }
+      frame.clear();
+      const s = h / 32;
+      frame.fillStyle(0x061820, .3).fillRoundedRect(-w / 2, -h / 2 + 2 * s, w, h, 4 * s);
+      frame.fillStyle(active ? 0x087a9c : 0x283e55, .94).fillRoundedRect(-w / 2, -h / 2, w, h, 4 * s);
+      frame.lineStyle(s, active ? 0x65efff : 0x8daabb).strokeRoundedRect(-w / 2, -h / 2, w, h, 4 * s);
+    };
+    draw(this.autoModeFrame, this.autoFishing);
+    draw(this.manualModeFrame, !this.autoFishing);
   }
 
   private createHudIcon(x: number, y: number, size: number, panel: PanelName | 'cast'): void {
@@ -990,7 +1208,7 @@ class ReelScene extends Phaser.Scene {
     if (success) {
       this.lastCatch = this.rollCatch(automatic);
       this.landedFish.setPosition(this.hook.x, this.hook.y + 10)
-        .setTint(Phaser.Display.Color.HexStringToColor(this.lastCatch.color).color).setVisible(true);
+        .setTexture(`fish-${this.lastCatch.id}`).clearTint().setDisplaySize(64, 64).setVisible(true);
       this.streak++;
       this.progress.bestStreak = Math.max(this.progress.bestStreak, this.streak);
       this.flashStatus(`${automatic ? 'AUTO • ' : ''}${this.lastCatch.name} ON THE LINE!`, this.lastCatch.color);
@@ -1007,7 +1225,7 @@ class ReelScene extends Phaser.Scene {
     this.hook.setVisible(false);
     this.landedFish.setVisible(false);
     this.rod.setAngle(0);
-    this.castButtonText.setText('CAST / REEL [SPACE]');
+    this.castButtonText.setText('FISH');
     if (this.lastCatch) {
       const result = this.lastCatch;
       this.progress.coins += result.value;
@@ -1066,6 +1284,7 @@ class ReelScene extends Phaser.Scene {
   private toggleAutoFishing(): void {
     this.autoFishing = !this.autoFishing;
     this.autoIndicator.setVisible(this.autoFishing);
+    this.refreshFishingModeButtons();
     if (this.autoFishing) {
       this.nextAutoCastAt = this.time.now + 350;
       this.flashStatus('AUTO FISHING ENABLED', '#60d394');
@@ -1398,7 +1617,7 @@ class ReelScene extends Phaser.Scene {
     }
     caught.slice(this.inventoryPage * pageSize, this.inventoryPage * pageSize + pageSize).forEach((fish, index) => {
       const y = top + 96 + index * (SIDEBAR_MODE ? 58 : 54);
-      const icon = this.add.sprite(cx - width / 2 + 45, y + 18, 'fish').setTint(fish.tint).setScale(.8);
+      const icon = this.add.sprite(cx - width / 2 + 45, y + 18, `fish-${fish.id}`).setDisplaySize(48, 48);
       this.activePanel!.add(icon);
       this.addPanelText(cx - width / 2 + 74, y + 4, fish.name.toUpperCase(), fish.color, SIDEBAR_MODE ? 8 : 11);
       this.addPanelText(cx - width / 2 + 74, y + 24, `${fish.rarity}  •  OWNED ${this.progress.fishInventory[fish.id]}  •  BASE ${fish.value}c`, '#82afb2', SIDEBAR_MODE ? 7 : 9);
@@ -1417,8 +1636,8 @@ class ReelScene extends Phaser.Scene {
     FISH.slice(this.codexPage * pageSize, this.codexPage * pageSize + pageSize).forEach((fish, index) => {
       const discovered = (this.progress.fishInventory[fish.id] ?? 0) > 0;
       const y = top + 92 + index * (SIDEBAR_MODE ? 62 : 56);
-      const icon = this.add.sprite(cx - width / 2 + 45, y + 19, 'fish')
-        .setTint(discovered ? fish.tint : 0x02080b).setScale(.85);
+      const icon = this.add.sprite(cx - width / 2 + 45, y + 19, `fish-${fish.id}`)
+        .setTint(discovered ? 0xffffff : 0x02080b).setDisplaySize(48, 48);
       this.activePanel!.add(icon);
       this.addPanelText(cx - width / 2 + 76, y + 2, discovered ? fish.name.toUpperCase() : '???', discovered ? fish.color : '#4e6669', SIDEBAR_MODE ? 8 : 11);
       const requirements = `ROD ${fish.minRod}  •  BOAT ${fish.minBoat}  •  BAIT ${fish.minBait}${fish.requirement ? `  •  ${fish.requirement.toUpperCase()}` : ''}`;
@@ -1564,6 +1783,7 @@ class ReelScene extends Phaser.Scene {
     const bait = BAITS[this.progress.selectedBait];
     const stock = this.progress.baitStock[this.progress.selectedBait] ?? 0;
     this.progress.bait = stock;
+    this.refreshBaitHotbar();
     const discovered = FISH.filter(fish => (this.progress.fishInventory[fish.id] ?? 0) > 0).length;
     this.profileStats?.setText([
       `${(this.progress.captainName || 'CAPTAIN').toUpperCase()}  /  LV.${this.progress.level}`,
