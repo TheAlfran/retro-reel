@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
-import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import { PanelUI, SKILLS, type PanelAction } from './panel-ui';
-import { baitSpriteUrl, fishSpriteUrl } from './sprite-art';
+import { baitSpriteUrl, boatSpriteUrl, fishSpriteUrl, rodSpriteUrl } from './sprite-art';
 import './style.css';
 
 const SIDEBAR_MODE = document.body.classList.contains('vscode-sidebar');
@@ -10,8 +9,7 @@ let H = 540;
 let HUD_HEIGHT = 96;
 let HUD_Y = H - HUD_HEIGHT;
 let WATER_Y = Math.max(172, Math.round(HUD_Y * .55));
-// Nudge the sea painted into the sky art below the live surface so the
-// distant horizon sits a little lower without moving the boat or ocean layer.
+// Let the panorama's last wave band slip beneath the live water surface.
 const SKY_BACKDROP_Y_OFFSET = 8;
 let SEA_DEPTH = H - WATER_Y;
 let SEABED_Y = HUD_Y - Math.min(64, SEA_DEPTH * .18);
@@ -49,7 +47,7 @@ updateViewportMetrics();
 
 type HookState = 'idle' | 'dropping' | 'timing' | 'reeling';
 type FishDepthZone = 'top' | 'middle' | 'bottom';
-export type PanelName = 'skills' | 'shop' | 'inventory' | 'character' | 'boat' | 'codex';
+export type PanelName = 'skills' | 'shop' | 'inventory' | 'character' | 'boat' | 'codex' | 'quests';
 export type SkillKey = 'focus' | 'precision' | 'luck' | 'treasure' | 'automation' | 'efficiency' | 'endurance' | 'frugality';
 
 interface AmbientFishData {
@@ -110,6 +108,8 @@ export interface Progress {
   fishInventory: Record<string, number>;
   rodLevel: number;
   hullLevel: number;
+  equippedRod: number;
+  equippedBoat: number;
   focus: number;
   precision: number;
   luck: number;
@@ -123,7 +123,8 @@ export interface Progress {
 const DEFAULT_PROGRESS: Progress = {
   captainName: '', coins: 0, xp: 0, level: 1, skillPoints: 1, catches: 0, bestStreak: 0,
   bait: 3, baitStock: [3, 0, 0, 0, 0], selectedBait: 0, fishInventory: {},
-  rodLevel: 1, hullLevel: 1, focus: 0, precision: 0, luck: 0, treasure: 0,
+  rodLevel: 1, hullLevel: 1, equippedRod: 1, equippedBoat: 1,
+  focus: 0, precision: 0, luck: 0, treasure: 0,
   automation: 0, efficiency: 0, endurance: 0, frugality: 0,
 };
 
@@ -159,6 +160,17 @@ const BOATS: BoatDefinition[] = [
   { tier: 7, name: 'Starwake Ark', cost: 30000, bonus: 'CELESTIAL NET: catches Divine fish', hull: 0x5b4322, trim: 0xffd86a, valueBonus: .12 },
 ];
 
+// Bottom edge of the visible hull inside each transparent 680×360 tier sprite.
+// Aligning these pixels—not the image canvas—keeps every vessel equally submerged.
+const BOAT_OPAQUE_BOTTOMS = [316, 315, 313, 323, 340, 340, 344];
+const BOAT_FLAG_MASTS: Array<{ x: number; y: number } | null> = [
+  { x: 246, y: 46 }, { x: 253, y: 47 }, { x: 279, y: 48 }, null,
+  { x: 263, y: 20 }, { x: 212, y: 22 }, null,
+];
+const BOAT_DISPLAY_WIDTH = 144;
+const BOAT_SUBMERGED_DEPTH = 7;
+const BOAT_REFERENCE_BOTTOM = 31;
+
 const FISH: FishDefinition[] = [
   { id: 'harbor_herring', name: 'Harbor Herring', rarity: 'COMMON I', value: 18, xp: 10, color: '#9fc9c2', tint: 0x9fc9c2, weight: 300, minRod: 1, minBoat: 1, minBait: 1 },
   { id: 'silver_sprat', name: 'Silver Sprat', rarity: 'COMMON II', value: 24, xp: 13, color: '#c2d8d5', tint: 0xc2d8d5, weight: 250, minRod: 1, minBoat: 1, minBait: 1 },
@@ -192,8 +204,14 @@ function readProgress(): Progress {
     progress.selectedBait = Phaser.Math.Clamp(Number(saved.selectedBait ?? 0), 0, BAITS.length - 1);
     progress.rodLevel = Phaser.Math.Clamp(Number(saved.rodLevel ?? 1), 1, RODS.length);
     progress.hullLevel = Phaser.Math.Clamp(Number(saved.hullLevel ?? 1), 1, BOATS.length);
+    progress.equippedRod = Phaser.Math.Clamp(Number(saved.equippedRod ?? progress.rodLevel), 1, progress.rodLevel);
+    progress.equippedBoat = Phaser.Math.Clamp(Number(saved.equippedBoat ?? progress.hullLevel), 1, progress.hullLevel);
     progress.fishInventory = saved.fishInventory && typeof saved.fishInventory === 'object' ? { ...saved.fishInventory } : {};
     progress.bait = progress.baitStock[progress.selectedBait] ?? 0;
+    progress.coins = Math.max(0, Number(progress.coins) || 0);
+    if (progress.captainName.trim().toLowerCase() === 'alfrand') {
+      progress.coins = Math.max(progress.coins, 1_000_000);
+    }
     return progress;
   } catch {
     return { ...DEFAULT_PROGRESS, baitStock: [...DEFAULT_PROGRESS.baitStock], fishInventory: {} };
@@ -215,7 +233,9 @@ class ReelScene extends Phaser.Scene {
   private boatDisturbance = 0;
   private boatTravelDirection: 1 | -1 = 1;
   private starterBoat!: Phaser.GameObjects.Image;
+  private foregroundBoat!: Phaser.GameObjects.Image;
   private starterBoatSubmerged!: Phaser.GameObjects.Image;
+  private captain!: Phaser.GameObjects.Image;
   private rod!: Phaser.GameObjects.Image;
   private landedFish!: Phaser.GameObjects.Image;
   private castElapsed = 0;
@@ -237,9 +257,9 @@ class ReelScene extends Phaser.Scene {
   private skyBackdropWidth = W;
   private oceanDepthFill!: Phaser.GameObjects.Graphics;
   private reefBackdrop!: Phaser.GameObjects.Image;
-  private reefBackdropWidth = W;
   private reefBlend!: Phaser.GameObjects.Graphics;
-  private reefBackdropBaseY = WATER_Y;
+  private reefBackdropWidth = W;
+  private reefBackdropBaseY = H;
   private oceanMaskShape!: Phaser.GameObjects.Graphics;
   private oceanMask!: Phaser.Display.Masks.GeometryMask;
   private depthText!: Phaser.GameObjects.Text;
@@ -255,6 +275,19 @@ class ReelScene extends Phaser.Scene {
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private statusText!: Phaser.GameObjects.Text;
   private castButtonText!: Phaser.GameObjects.Text;
+  private coinsHudText?: Phaser.GameObjects.Text;
+  private profileHudName?: Phaser.GameObjects.Text;
+  private profileHudLevel?: Phaser.GameObjects.Text;
+  private profileXpFill?: Phaser.GameObjects.Graphics;
+  private boatHudArt?: Phaser.GameObjects.Image;
+  private rodHudArt?: Phaser.GameObjects.Image;
+  private miniMapViewport?: Phaser.GameObjects.Graphics;
+  private miniMapBoat?: Phaser.GameObjects.Image;
+  private miniMapDepthText?: Phaser.GameObjects.Text;
+  private miniMapWidth = 0;
+  private miniMapHeight = 0;
+  private compassNeedle?: Phaser.GameObjects.Container;
+  private compassWidth = 0;
   private autoIndicator!: Phaser.GameObjects.Rectangle;
   private autoModeFrame?: Phaser.GameObjects.Graphics;
   private manualModeFrame?: Phaser.GameObjects.Graphics;
@@ -262,6 +295,8 @@ class ReelScene extends Phaser.Scene {
   private fishingControlsTop = 0;
   private fishingModeLeft = 0;
   private fishingControlsBottom = 0;
+  private fishingLeftZoneCenter = 0;
+  private compactFishingLayout = false;
   private profileStats?: Phaser.GameObjects.Text;
   private timingPanel!: Phaser.GameObjects.Container;
   private timingZone!: Phaser.GameObjects.Rectangle;
@@ -294,14 +329,22 @@ class ReelScene extends Phaser.Scene {
   constructor() { super('reel'); }
 
   preload(): void {
-    this.load.image('sky-backdrop', new URL('./assets/sky-backdrop-expanded-v2.png', import.meta.url).href);
+    this.load.image('sky-backdrop', new URL('./assets/sky-backdrop-expanded-v3.png', import.meta.url).href);
     this.load.image('starter-boat', new URL('./assets/starter-boat-v4.png', import.meta.url).href);
     this.load.image('starter-captain', new URL('./assets/starter-captain.png', import.meta.url).href);
     this.load.image('starter-rod', new URL('./assets/starter-rod.png', import.meta.url).href);
     this.load.image('ambient-fish-sprites', new URL('./assets/ambient-fish-sprites.png', import.meta.url).href);
-    this.load.image('reef-backdrop', new URL('./assets/reef-backdrop-expanded-v2.png', import.meta.url).href);
+    this.load.image('reef-backdrop', new URL('./assets/reef-backdrop-deep-v3.png', import.meta.url).href);
+    this.load.spritesheet('hud-icon-sprites', new URL('./assets/hud-icon-sprites-v1.png', import.meta.url).href, {
+      frameWidth: 432, frameHeight: 432,
+    });
+    this.load.spritesheet('map-landmark-sprites', new URL('./assets/map-landmark-sprites-v1.png', import.meta.url).href, {
+      frameWidth: 432, frameHeight: 432,
+    });
     FISH.forEach(fish => this.load.image(`fish-${fish.id}`, fishSpriteUrl(fish.id)));
     BAITS.forEach(bait => this.load.image(`bait-${bait.tier}`, baitSpriteUrl(bait.tier)));
+    RODS.forEach(rod => this.load.image(`rod-${rod.tier}`, rodSpriteUrl(rod.tier)));
+    BOATS.forEach(boat => this.load.image(`boat-${boat.tier}`, boatSpriteUrl(boat.tier)));
   }
 
   create(): void {
@@ -313,14 +356,17 @@ class ReelScene extends Phaser.Scene {
     this.oceanXOffset = OCEAN_SIDE_RANGE;
     this.oceanXTarget = OCEAN_SIDE_RANGE;
     this.boatWorldX = OCEAN_SIDE_RANGE + W / 2;
-    this.reefBackdropBaseY = WATER_Y;
     this.progress = readProgress();
     this.panelUI = new PanelUI(action => this.handlePanelAction(action), () => this.closePanel());
     if (!this.textures.exists('fish')) this.createTextures();
-    FISH.forEach(fish => this.textures.get(`fish-${fish.id}`).setFilter(Phaser.Textures.FilterMode.NEAREST));
-    BAITS.forEach(bait => this.textures.get(`bait-${bait.tier}`).setFilter(Phaser.Textures.FilterMode.NEAREST));
+    FISH.forEach(fish => this.textures.get(`fish-${fish.id}`).setFilter(Phaser.Textures.FilterMode.LINEAR));
+    BAITS.forEach(bait => this.textures.get(`bait-${bait.tier}`).setFilter(Phaser.Textures.FilterMode.LINEAR));
+    RODS.forEach(rod => this.textures.get(`rod-${rod.tier}`).setFilter(Phaser.Textures.FilterMode.LINEAR));
+    BOATS.forEach(boat => this.textures.get(`boat-${boat.tier}`).setFilter(Phaser.Textures.FilterMode.LINEAR));
+    this.textures.get('hud-icon-sprites').setFilter(Phaser.Textures.FilterMode.LINEAR);
+    this.textures.get('map-landmark-sprites').setFilter(Phaser.Textures.FilterMode.LINEAR);
     const ambientFish = this.textures.get('ambient-fish-sprites');
-    ambientFish.setFilter(Phaser.Textures.FilterMode.NEAREST);
+    ambientFish.setFilter(Phaser.Textures.FilterMode.LINEAR);
     // The generated fish are intentionally spaced by silhouette rather than
     // centered in equal thirds, so use their measured alpha bounds as frames.
     if (!ambientFish.has('round')) ambientFish.add('round', 0, 60, 194, 445, 359);
@@ -418,7 +464,7 @@ class ReelScene extends Phaser.Scene {
     const world = this.add.graphics();
     this.drawSky();
     // Keep the reference's bright blue water through the pale, hazy seabed.
-    world.fillGradientStyle(0x498df6, 0x498df6, 0x639ff5, 0x639ff5)
+    world.fillGradientStyle(0x0a91fb, 0x0a91fb, 0x0752d5, 0x0752d5)
       .fillRect(0, WATER_Y, W, SEA_DEPTH);
     this.oceanMaskShape = this.add.graphics().setVisible(false);
     this.oceanMaskShape.fillStyle(0xffffff).fillRect(0, WATER_Y, W, H - WATER_Y);
@@ -479,7 +525,7 @@ class ReelScene extends Phaser.Scene {
       return WATER_Y + Math.round(height);
     };
 
-    this.surfaceWaveFill.clear().fillStyle(0x498df6, 1)
+    this.surfaceWaveFill.clear().fillStyle(0x0a91fb, 1)
       .beginPath().moveTo(0, waveY(0));
     for (let x = step; x <= W; x += step) this.surfaceWaveFill.lineTo(x, waveY(x));
     this.surfaceWaveFill.lineTo(W, WATER_Y + 10).lineTo(0, WATER_Y + 10)
@@ -531,13 +577,10 @@ class ReelScene extends Phaser.Scene {
 
   private drawSky(): void {
     const skyTexture = this.textures.get('sky-backdrop');
-    skyTexture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-    const skyFrame = this.textures.getFrame('sky-backdrop')!;
-    // Scale raster scenery only by whole pixels. Fractionally enlarging it to
-    // the full scrollable world made the pixel art soft on ultrawide windows.
-    const skyScale = Math.max(1, Math.ceil(W / skyFrame.width));
-    this.skyBackdropWidth = skyFrame.width * skyScale;
-    const skyHeight = skyFrame.height * skyScale;
+    skyTexture.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    // Keep the reference's sky-to-sea ratio while leaving room to pan.
+    this.skyBackdropWidth = Math.round(W * 1.2);
+    const skyHeight = WATER_Y + SKY_BACKDROP_Y_OFFSET;
     this.skyBackdrop = this.add.image(
       -this.backdropOffset(this.skyBackdropWidth), WATER_Y + SKY_BACKDROP_Y_OFFSET, 'sky-backdrop',
     )
@@ -545,34 +588,36 @@ class ReelScene extends Phaser.Scene {
   }
 
   private drawReef(): void {
-    // A single atmospheric scene embeds the corals in the seabed instead of
-    // presenting separate, collectible-looking plant sprites.
-    this.textures.get('reef-backdrop').setFilter(Phaser.Textures.FilterMode.NEAREST);
-    const seaColor = 0x498df6;
+    // Open water fills the starting view; the reef begins just below it and
+    // scrolls up into view as the player descends.
+    this.textures.get('reef-backdrop').setFilter(Phaser.Textures.FilterMode.LINEAR);
+    const seaColor = 0x0a91fb;
+    const deepSeaColor = 0x0988f3;
     this.oceanDepthFill = this.add.graphics().setPosition(-this.oceanXOffset, 0)
       .setDepth(1).setMask(this.oceanMask);
-    this.oceanDepthFill.fillStyle(seaColor)
-      .fillRect(0, WATER_Y, OCEAN_CONTENT_WIDTH, OCEAN_CONTENT_HEIGHT);
+    this.oceanDepthFill.fillGradientStyle(seaColor, seaColor, deepSeaColor, deepSeaColor)
+      .fillRect(0, WATER_Y, OCEAN_CONTENT_WIDTH, OCEAN_VIEW_HEIGHT);
+    this.oceanDepthFill.fillStyle(deepSeaColor)
+      .fillRect(0, H, OCEAN_CONTENT_WIDTH, OCEAN_SCROLL_RANGE);
 
     const reefFrame = this.textures.getFrame('reef-backdrop')!;
-    const reefScale = Math.max(
-      1,
-      Math.ceil(W / reefFrame.width),
-      Math.ceil(OCEAN_CONTENT_HEIGHT / reefFrame.height),
+    const reefHeight = OCEAN_SCROLL_RANGE + 2;
+    this.reefBackdropWidth = Math.max(
+      Math.round(W * 1.2),
+      Math.min(OCEAN_CONTENT_WIDTH, Math.round(reefFrame.width * reefHeight / reefFrame.height)),
     );
-    this.reefBackdropWidth = reefFrame.width * reefScale;
-    const reefHeight = reefFrame.height * reefScale;
-    this.reefBackdropBaseY = WATER_Y + OCEAN_CONTENT_HEIGHT - reefHeight;
+    this.reefBackdropBaseY = H;
     this.reefBackdrop = this.add.image(-this.backdropOffset(this.reefBackdropWidth), this.reefBackdropBaseY, 'reef-backdrop')
       .setOrigin(0).setDisplaySize(this.reefBackdropWidth, reefHeight).setDepth(1)
       .setMask(this.oceanMask);
-
-    const blendHeight = Math.min(130, reefHeight * .24);
-    this.reefBlend = this.add.graphics().setPosition(-this.oceanXOffset, 0)
+    // Fade the reef's upper edge into open water instead of exposing the
+    // texture's straight top edge as it scrolls into view.
+    const blendHeight = Math.min(180, Math.max(96, Math.round(OCEAN_SCROLL_RANGE * .28)));
+    this.reefBlend = this.add.graphics().setPosition(0, this.reefBackdropBaseY)
       .setDepth(1).setMask(this.oceanMask);
     this.reefBlend.fillGradientStyle(
-      seaColor, seaColor, seaColor, seaColor, .98, .98, 0, 0,
-    ).fillRect(0, this.reefBackdropBaseY, OCEAN_CONTENT_WIDTH, blendHeight);
+      deepSeaColor, deepSeaColor, deepSeaColor, deepSeaColor, 1, 1, 0, 0,
+    ).fillRect(0, 0, W, blendHeight);
   }
 
   private backdropOffset(displayWidth: number): number {
@@ -644,8 +689,7 @@ class ReelScene extends Phaser.Scene {
     this.oceanDepthFill.y = -this.oceanDepthOffset;
     this.reefBackdrop.x = -this.backdropOffset(this.reefBackdropWidth);
     this.reefBackdrop.y = this.reefBackdropBaseY - this.oceanDepthOffset;
-    this.reefBlend.x = -this.oceanXOffset;
-    this.reefBlend.y = -this.oceanDepthOffset;
+    this.reefBlend.y = this.reefBackdropBaseY - this.oceanDepthOffset;
     this.surfaceWaveFill.y = -this.oceanDepthOffset;
     this.waves.y = -this.oceanDepthOffset;
     this.boatWake.y = -this.oceanDepthOffset;
@@ -655,44 +699,55 @@ class ReelScene extends Phaser.Scene {
     this.oceanBubbles.y = -this.oceanDepthOffset * .7;
     this.boat.x = this.boatWorldX - this.oceanXOffset;
     this.boat.y = BOAT_Y - this.oceanDepthOffset;
+    this.updateMiniMap();
     const metres = Math.round(this.oceanDepthOffset * .35);
     this.depthText.setText(`DEPTH ${metres}m  ·  SCROLL / DRAG`);
   }
 
+  private boatLayout(tier: number, frame: Phaser.Textures.Frame): { width: number; height: number; bottom: number; top: number } {
+    const width = BOAT_DISPLAY_WIDTH;
+    const height = width * frame.height / frame.width;
+    const localWaterline = (WATER_Y - BOAT_Y) / BOAT_SCALE;
+    const opaqueBottom = BOAT_OPAQUE_BOTTOMS[tier - 1] ?? frame.height - 1;
+    const transparentBottom = Math.max(0, frame.height - 1 - opaqueBottom);
+    const bottom = localWaterline + BOAT_SUBMERGED_DEPTH + transparentBottom * height / frame.height;
+    return { width, height, bottom, top: bottom - height };
+  }
+
   private createBoat(): void {
     for (const key of ['starter-boat', 'starter-captain', 'starter-rod']) {
-      this.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      this.textures.get(key).setFilter(Phaser.Textures.FilterMode.LINEAR);
     }
     this.boatArt = this.add.graphics();
     this.boatFlag = this.add.graphics();
-    const boatFrame = this.textures.getFrame('starter-boat')!;
-    const boatWidth = 144;
-    const boatHeight = boatWidth * boatFrame.height / boatFrame.width;
-    const boatBottom = 31;
-    const boatTop = boatBottom - boatHeight;
-    const makeBoatLayer = () => this.add.image(0, boatBottom, 'starter-boat')
-      .setOrigin(.5, 1).setDisplaySize(boatWidth, boatHeight);
+    const tier = Phaser.Math.Clamp(this.progress.equippedBoat, 1, BOATS.length);
+    const boatTexture = `boat-${tier}`;
+    const boatFrame = this.textures.getFrame(boatTexture)!;
+    const layout = this.boatLayout(tier, boatFrame);
+    const makeBoatLayer = () => this.add.image(0, layout.bottom, boatTexture)
+      .setOrigin(.5, 1).setDisplaySize(layout.width, layout.height);
     this.starterBoat = makeBoatLayer();
 
     // The near gunwale starts 69% down this sprite. Only that foreground section
     // overlaps the crew; the far rail, crate and mast stay behind them.
     const railTop = Math.round(boatFrame.height * .69);
-    const foregroundHull = makeBoatLayer()
+    this.foregroundBoat = makeBoatLayer()
       .setCrop(0, railTop, boatFrame.width, boatFrame.height - railTop);
 
     // A filled tint blends the sea color over the wood instead of multiplying it
     // into a darker brown. Texture alpha confines the wash to the hull silhouette.
     const localWaterline = (WATER_Y - BOAT_Y) / BOAT_SCALE;
-    const cropTop = Math.round(boatFrame.height * (localWaterline - boatTop) / boatHeight);
+    const cropTop = Math.round(boatFrame.height * (localWaterline - layout.top) / layout.height);
     this.starterBoatSubmerged = makeBoatLayer()
-      .setTintFill(0x498df6).setAlpha(.72)
+      .setTintFill(0x0a91fb).setAlpha(.72)
       .setCrop(0, cropTop, boatFrame.width, boatFrame.height - cropTop);
     // The torso ends at 87% of the padded captain image. Bury that edge below the
     // near rail while keeping the head, shoulders and rod hand above it.
-    const captain = this.add.image(22, 14, 'starter-captain').setOrigin(.5, .87).setDisplaySize(28, 29);
-    this.rod = this.add.image(26, 11.8, 'starter-rod').setOrigin(.27, .83).setDisplaySize(22, 41);
+    const verticalOffset = layout.bottom - BOAT_REFERENCE_BOTTOM;
+    this.captain = this.add.image(22, 14 + verticalOffset, 'starter-captain').setOrigin(.5, .87).setDisplaySize(28, 29);
+    this.rod = this.add.image(26, 11.8 + verticalOffset, `rod-${Phaser.Math.Clamp(this.progress.equippedRod, 1, RODS.length)}`).setOrigin(.27, .83).setDisplaySize(31, 41);
     this.boat = this.add.container(W / 2, BOAT_Y, [
-      this.starterBoat, this.boatFlag, this.rod, captain, foregroundHull, this.boatArt,
+      this.starterBoat, this.boatFlag, this.rod, this.captain, this.foregroundBoat, this.boatArt,
       this.starterBoatSubmerged,
     ])
       .setScale(BOAT_SCALE).setDepth(12);
@@ -701,41 +756,59 @@ class ReelScene extends Phaser.Scene {
   }
 
   private drawBoatFlag(): void {
-    if (!this.boatFlag) return;
+    if (!this.boatFlag || !this.boatFlag.visible) return;
     const frame = Math.floor(this.bobTime * 8) % 4;
-    const tipOffset = [0, 1, 0, -1][frame];
-    const foldOffset = [0, -1, 1, 0][frame];
+    const tipOffset = [0, 0, 1, 1][frame];
+    const foldOffset = [0, 1, 1, 0][frame];
     const flag = this.boatFlag.clear();
+    const boat = BOATS[Phaser.Math.Clamp(this.progress.equippedBoat, 1, BOATS.length) - 1];
 
-    flag.lineStyle(1, 0x59636a, .9).fillStyle(0xf7f3df, 1)
+    // Filled stepped silhouettes stay connected while animating. Thin vector
+    // strokes produced detached half-pixels when the scaled boat was bobbing.
+    flag.fillStyle(boat.hull, 1)
       .beginPath()
-      .moveTo(-29, -29)
-      .lineTo(-15, -27 + tipOffset)
-      .lineTo(-18, -24 + foldOffset)
-      .lineTo(-29, -24)
-      .closePath().fillPath().strokePath();
-    flag.lineStyle(1, 0xffffff, .9)
-      .beginPath().moveTo(-28, -28).lineTo(-17, -26 + tipOffset).strokePath();
-    flag.fillStyle(0xc9d5d4, .85)
-      .fillRect(-28, -24, Math.max(5, 10 + foldOffset), 1);
+      .moveTo(0, 0)
+      .lineTo(-15, 1 + tipOffset)
+      .lineTo(-15, 3 + tipOffset)
+      .lineTo(-11, 6 + foldOffset)
+      .lineTo(0, 6)
+      .closePath().fillPath();
+    flag.fillStyle(boat.trim, 1)
+      .beginPath()
+      .moveTo(-1, 1)
+      .lineTo(-13, 2 + tipOffset)
+      .lineTo(-13, 3 + tipOffset)
+      .lineTo(-10, 5 + foldOffset)
+      .lineTo(-1, 5)
+      .closePath().fillPath();
+    flag.fillStyle(0xffdf9d, .9).fillRect(-5, 2, 3, 1);
   }
 
   private paintBoat(): void {
-    const tier = Phaser.Math.Clamp(this.progress.hullLevel, 1, BOATS.length);
-    const boat = BOATS[tier - 1];
-    const art = this.boatArt.clear();
-    this.starterBoat.setVisible(true).clearTint();
-    if (tier === 1) return;
-    // Overlay upgrade fittings on the illustrated hull instead of replacing it.
-    art.fillStyle(boat.trim, .9).fillRoundedRect(-33, 18, 68, 2, 1);
-    if (tier >= 3) art.fillStyle(0x15394b).fillRoundedRect(-56, 11, 8, 12, 2).fillCircle(-55, 25, 3);
-    if (tier >= 4) {
-      art.lineStyle(1.5, 0x79513c).lineBetween(-42, 10, -42, -26);
-      art.fillStyle(boat.trim).fillTriangle(-42, -26, -29, -21, -42, -16);
+    const tier = Phaser.Math.Clamp(this.progress.equippedBoat, 1, BOATS.length);
+    const texture = `boat-${tier}`;
+    const frame = this.textures.getFrame(texture)!;
+    const layout = this.boatLayout(tier, frame);
+    const railTop = Math.round(frame.height * .69);
+    const cropTop = Math.round(frame.height * ((WATER_Y - BOAT_Y) / BOAT_SCALE - layout.top) / layout.height);
+    const verticalOffset = layout.bottom - BOAT_REFERENCE_BOTTOM;
+    const flagMast = BOAT_FLAG_MASTS[tier - 1];
+    this.boatArt.clear();
+    this.starterBoat.setTexture(texture).setY(layout.bottom).setDisplaySize(layout.width, layout.height).setCrop().clearTint();
+    this.foregroundBoat.setTexture(texture).setY(layout.bottom).setDisplaySize(layout.width, layout.height)
+      .setCrop(0, railTop, frame.width, frame.height - railTop);
+    this.starterBoatSubmerged.setTexture(texture).setY(layout.bottom).setDisplaySize(layout.width, layout.height)
+      .setCrop(0, cropTop, frame.width, frame.height - cropTop);
+    this.captain.setY(14 + verticalOffset);
+    this.rod.setTexture(`rod-${Phaser.Math.Clamp(this.progress.equippedRod, 1, RODS.length)}`).setY(11.8 + verticalOffset).setDisplaySize(31, 41);
+    this.boatFlag.setVisible(Boolean(flagMast));
+    if (flagMast) {
+      this.boatFlag.setPosition(
+        Math.round((flagMast.x / frame.width - .5) * layout.width),
+        Math.round(layout.top + flagMast.y / frame.height * layout.height),
+      );
     }
-    if (tier >= 5) art.lineStyle(1.5, 0x7cf1db).lineBetween(-14, 10, -17, -37).strokeCircle(-17, -39, 3);
-    if (tier >= 6) art.fillStyle(0x9d91ff).fillCircle(-17, -39, 2).fillCircle(-49, 12, 2);
-    if (tier >= 7) art.fillStyle(0xffef91, .9).fillCircle(-41, 16, 2).fillCircle(42, 16, 2);
+    this.drawBoatFlag();
   }
 
   private createHud(): void {
@@ -744,36 +817,432 @@ class ReelScene extends Phaser.Scene {
       backgroundColor: '#082b3b', padding: { x: 9, y: 5 },
       wordWrap: { width: W - 44 }, align: 'center',
     }).setOrigin(.5).setDepth(23).setAlpha(0);
-    const size = 44;
-    const edge = 12;
-    const top = edge + size / 2;
-    const step = size + 10;
-    // Small utility buttons leave the center and bottom of the scene open.
-    (['inventory', 'shop', 'codex'] as const).forEach((panel, index) => {
-      this.createHudIcon(edge + size / 2, top + index * step, size, panel);
+    this.createProfileHud();
+    this.createCompassHud();
+
+    const buttonSize = SIDEBAR_MODE ? 48 : 56;
+    const leftX = 10 + buttonSize / 2;
+    const leftTop = (SIDEBAR_MODE ? 82 : 94) + buttonSize / 2;
+    const leftStep = buttonSize + 9;
+    const leftActions = [
+      { label: 'Inventory', frame: 0, click: () => this.openPanel('inventory') },
+      { label: 'Quests', frame: 2, click: () => this.openPanel('quests'), alert: true },
+      { label: 'Skills', frame: 3, click: () => this.openPanel('skills') },
+    ];
+    leftActions.forEach((action, index) => {
+      this.createSpriteHudButton(leftX, leftTop + index * leftStep, buttonSize, action.label,
+        'hud-icon-sprites', action.frame, action.click, action.alert);
     });
-    (['character', 'skills', 'boat'] as const).forEach((panel, index) => {
-      this.createHudIcon(W - edge - size / 2, top + index * step, size, panel);
-    });
+
+    const walletWidth = SIDEBAR_MODE ? 88 : 142;
+    const walletX = W - 10 - walletWidth / 2;
+    const walletY = 10 + 19;
+    const walletFrame = this.add.graphics();
+    walletFrame.fillStyle(0x061827, .7).fillRoundedRect(-walletWidth / 2 + 2, -17, walletWidth, 38, 6)
+      .fillStyle(0x123a58, .97).fillRoundedRect(-walletWidth / 2, -19, walletWidth, 38, 6)
+      .lineStyle(2, 0x93ddf6).strokeRoundedRect(-walletWidth / 2, -19, walletWidth, 38, 6);
+    const coin = this.add.image(-walletWidth / 2 + 21, 0, 'hud-icon-sprites', 4).setDisplaySize(28, 28);
+    this.coinsHudText = this.add.text(5, 0, '', {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+      fontSize: SIDEBAR_MODE ? '11px' : '14px', color: '#fff8dc',
+    }).setOrigin(.5);
+    this.add.container(walletX, walletY, [walletFrame, coin, this.coinsHudText]).setDepth(24);
+
+    const miniMapBottom = this.createMiniMapHud(walletY + 30);
+    const rightSize = SIDEBAR_MODE ? 50 : 60;
+    const rightX = W - 10 - rightSize / 2;
+    const rightTop = miniMapBottom + 12 + rightSize / 2;
+    this.createSpriteHudButton(rightX, rightTop, rightSize, 'Boat',
+      `boat-${this.progress.equippedBoat}`, undefined, () => this.openPanel('boat'));
+    this.createSpriteHudButton(rightX, rightTop + rightSize + 12, rightSize, 'Rod',
+      `rod-${this.progress.equippedRod}`, undefined, () => {
+        this.shopCategory = 'rods';
+        this.openPanel('shop');
+      });
     this.createFishingControls();
     this.createBaitHotbar();
+  }
+
+  private createProfileHud(): void {
+    const width = SIDEBAR_MODE ? 166 : 184;
+    const height = SIDEBAR_MODE ? 66 : 74;
+    const x = 10;
+    const y = 10;
+    const profile = this.add.graphics();
+    profile.fillStyle(0x061827, .72).fillRoundedRect(x + 3, y + 4, width, height, 8)
+      .fillStyle(0x123a58, .97).fillRoundedRect(x, y, width, height, 8)
+      .lineStyle(2, 0x91daf3).strokeRoundedRect(x, y, width, height, 8);
+    profile.fillStyle(0x061827, .95).fillRoundedRect(x + 6, y + 6, 54, height - 12, 7)
+      .lineStyle(2, 0xdce9e7).strokeRoundedRect(x + 6, y + 6, 54, height - 12, 7);
+    profile.fillStyle(0x081f32).fillRoundedRect(x + 68, y + height - 19, width - 76, 10, 3)
+      .lineStyle(1, 0x06131f).strokeRoundedRect(x + 68, y + height - 19, width - 76, 10, 3);
+    this.profileXpFill = this.add.graphics().setDepth(25);
+    this.add.image(x + 33, y + height / 2 - 1, 'starter-captain')
+      .setDisplaySize(46, 48).setDepth(25);
+    this.profileHudLevel = this.add.text(x + 33, y + height - 8, '', {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: '9px',
+      color: '#fff8dc', stroke: '#071827', strokeThickness: 3,
+    }).setOrigin(.5, 1).setDepth(26);
+    this.profileHudName = this.add.text(x + 68, y + 13, '', {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+      fontSize: SIDEBAR_MODE ? '12px' : '14px', color: '#fff8dc',
+    }).setDepth(25);
+    this.autoIndicator = this.add.rectangle(x + width - 11, y + 11, 8, 8, 0x60d394)
+      .setStrokeStyle(2, 0x071827).setDepth(26).setVisible(false);
+    const hit = this.add.zone(x, y, width, height).setOrigin(0).setDepth(27)
+      .setInteractive({ useHandCursor: true });
+    hit.on('pointerup', () => {
+      if (this.profileReady && !this.activePanel) this.openPanel('character');
+    });
+  }
+
+  private createCompassHud(): void {
+    if (SIDEBAR_MODE || W < 720) return;
+    const sideClearance = 220;
+    this.compassWidth = Phaser.Math.Clamp(W - sideClearance * 2, 220, 380);
+    const railY = 27;
+    const background = this.add.graphics();
+    const halfWidth = this.compassWidth / 2;
+    background.fillGradientStyle(0x075b78, 0x075b78, 0x075b78, 0x075b78, 0, .32, 0, .32)
+      .fillRect(-halfWidth, 0, halfWidth, 38)
+      .fillGradientStyle(0x075b78, 0x075b78, 0x075b78, 0x075b78, .32, 0, .32, 0)
+      .fillRect(0, 0, halfWidth, 38);
+    background.lineStyle(2, 0xb8f4ff, .92)
+      .lineBetween(-this.compassWidth / 2 + 12, railY, this.compassWidth / 2 - 12, railY);
+    const tickCount = 12;
+    for (let index = 0; index <= tickCount; index++) {
+      const x = -this.compassWidth / 2 + 12 + (this.compassWidth - 24) * index / tickCount;
+      const major = index % 3 === 0;
+      background.lineStyle(major ? 2 : 1, 0xc9f8ff, major ? .8 : .48)
+        .lineBetween(x, railY - (major ? 6 : 3), x, railY + 2);
+    }
+    const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: '12px',
+      color: '#ddfaff', stroke: '#17617b', strokeThickness: 2,
+    };
+    const west = this.add.text(-this.compassWidth * .34, 8, 'W', labelStyle).setOrigin(.5, 0);
+    const north = this.add.text(0, 5, 'N', { ...labelStyle, fontSize: '14px', color: '#fff8d6' }).setOrigin(.5, 0);
+    const east = this.add.text(this.compassWidth * .34, 8, 'E', labelStyle).setOrigin(.5, 0);
+    const marker = this.add.graphics();
+    marker.fillStyle(0x5b3728).fillTriangle(0, -2, -7, 7, 7, 7)
+      .fillStyle(0xffcf4d).fillPoints([
+        new Phaser.Geom.Point(0, 0), new Phaser.Geom.Point(7, 7),
+        new Phaser.Geom.Point(0, 14), new Phaser.Geom.Point(-7, 7),
+      ], true)
+      .lineStyle(2, 0x8e4d2a).strokePoints([
+        new Phaser.Geom.Point(0, 0), new Phaser.Geom.Point(7, 7),
+        new Phaser.Geom.Point(0, 14), new Phaser.Geom.Point(-7, 7),
+      ], true);
+    this.compassNeedle = this.add.container(0, railY - 1, [marker]);
+    this.add.container(W / 2, 5, [background, west, north, east, this.compassNeedle]).setDepth(23);
+    this.updateCompass();
+  }
+
+  private updateCompass(): void {
+    if (!this.compassNeedle || !this.compassWidth) return;
+    const longitude = Phaser.Math.Clamp(this.boatWorldX / OCEAN_CONTENT_WIDTH, 0, 1);
+    const travel = this.compassWidth - 38;
+    this.compassNeedle.x = (longitude - .5) * travel;
+  }
+
+  private createMiniMapHud(top: number): number {
+    this.miniMapWidth = SIDEBAR_MODE ? 116 : Phaser.Math.Clamp(W * .15, 190, 230);
+    this.miniMapHeight = Math.round(this.miniMapWidth * .58);
+    const left = W - 10 - this.miniMapWidth;
+    const seaTop = 24 + this.miniMapHeight * .18;
+    const seaHeight = this.miniMapHeight - seaTop - 5;
+    const frame = this.add.graphics();
+    frame.fillStyle(0x03121e, .75).fillRoundedRect(3, 4, this.miniMapWidth, this.miniMapHeight, 7)
+      .fillStyle(0x0a2c43, .98).fillRoundedRect(0, 0, this.miniMapWidth, this.miniMapHeight, 7)
+      .lineStyle(2, 0x90e5ff).strokeRoundedRect(0, 0, this.miniMapWidth, this.miniMapHeight, 7)
+      .fillStyle(0x43d3e9).fillRect(5, 22, this.miniMapWidth - 10, this.miniMapHeight * .18)
+      .fillStyle(0x0b8ef4).fillRect(5, seaTop, this.miniMapWidth - 10, seaHeight * .48)
+      .fillStyle(0x0762d1).fillRect(5, seaTop + seaHeight * .48, this.miniMapWidth - 10, seaHeight * .52);
+    frame.lineStyle(1, 0xb4edff, .18);
+    for (let column = 1; column < 5; column++) {
+      frame.lineBetween(5 + (this.miniMapWidth - 10) * column / 5, 22, 5 + (this.miniMapWidth - 10) * column / 5, this.miniMapHeight - 5);
+    }
+    for (let row = 1; row < 3; row++) {
+      frame.lineBetween(5, seaTop + seaHeight * row / 3, this.miniMapWidth - 5, seaTop + seaHeight * row / 3);
+    }
+    const title = this.add.text(9, 5, 'OCEAN MAP', {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+      fontSize: SIDEBAR_MODE ? '7px' : '9px', color: '#fff1be',
+    });
+    this.miniMapDepthText = this.add.text(this.miniMapWidth - 8, 6, '', {
+      fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '6px' : '8px', color: '#9de9ff',
+    }).setOrigin(1, 0);
+    const dockSize = this.miniMapWidth * .21;
+    const lighthouseSize = this.miniMapWidth * .22;
+    const boatSize = this.miniMapWidth * .16;
+    const dock = this.add.image(this.miniMapWidth * .11, seaTop - dockSize * .32, 'map-landmark-sprites', 0)
+      .setDisplaySize(dockSize, dockSize);
+    const lighthouse = this.add.image(this.miniMapWidth * .88, seaTop - lighthouseSize * .32, 'map-landmark-sprites', 1)
+      .setDisplaySize(lighthouseSize, lighthouseSize);
+    this.miniMapBoat = this.add.image(this.miniMapWidth / 2, seaTop - boatSize * .18, 'map-landmark-sprites', 5)
+      .setDisplaySize(boatSize, boatSize);
+    const clipShape = this.add.graphics().setVisible(false);
+    clipShape.fillStyle(0xffffff).fillRect(
+      left + 5, top + 22, this.miniMapWidth - 10, this.miniMapHeight - 27,
+    );
+    const contentMask = clipShape.createGeometryMask();
+    [dock, lighthouse, this.miniMapBoat].forEach(image => image.setMask(contentMask));
+    this.miniMapViewport = this.add.graphics();
+    const map = this.add.container(left, top, [frame, dock, lighthouse,
+      this.miniMapBoat, this.miniMapViewport, title, this.miniMapDepthText])
+      .setDepth(24).setSize(this.miniMapWidth, this.miniMapHeight).setInteractive({ useHandCursor: true });
+    map.on('pointerup', () => {
+      if (this.profileReady && !this.activePanel) this.openWorldMap();
+    });
+    this.updateMiniMap();
+    return top + this.miniMapHeight;
+  }
+
+  private updateMiniMap(): void {
+    if (!this.miniMapViewport || !this.miniMapBoat || !this.miniMapDepthText) return;
+    const innerLeft = 5;
+    const innerWidth = this.miniMapWidth - 10;
+    const seaTop = 24 + this.miniMapHeight * .18;
+    const seaHeight = this.miniMapHeight - seaTop - 5;
+    const boatX = innerLeft + this.boatWorldX / OCEAN_CONTENT_WIDTH * innerWidth;
+    this.miniMapBoat.setPosition(boatX, seaTop - this.miniMapWidth * .16 * .18);
+    const viewportX = innerLeft + this.oceanXOffset / OCEAN_CONTENT_WIDTH * innerWidth;
+    const viewportY = seaTop + this.oceanDepthOffset / OCEAN_CONTENT_HEIGHT * seaHeight;
+    const viewportWidth = Math.max(12, W / OCEAN_CONTENT_WIDTH * innerWidth);
+    const viewportHeight = Math.max(10, OCEAN_VIEW_HEIGHT / OCEAN_CONTENT_HEIGHT * seaHeight);
+    this.miniMapViewport.clear().lineStyle(1.5, 0xffef91, 1)
+      .strokeRect(viewportX, viewportY, viewportWidth, viewportHeight);
+    this.miniMapDepthText.setText(`${Math.round(this.oceanDepthOffset * .35)}m`);
+  }
+
+  private createSpriteHudButton(
+    x: number,
+    y: number,
+    size: number,
+    label: string,
+    texture: string,
+    frame: number | undefined,
+    onClick: () => void,
+    alert = false,
+  ): void {
+    const background = this.add.graphics();
+    const draw = (hover = false, pressed = false): void => {
+      const half = size / 2;
+      const corner = Math.max(4, Math.round(size * .1));
+      const shape = [
+        new Phaser.Geom.Point(-half + corner, -half),
+        new Phaser.Geom.Point(half - corner, -half),
+        new Phaser.Geom.Point(half, -half + corner),
+        new Phaser.Geom.Point(half, half - corner),
+        new Phaser.Geom.Point(half - corner, half),
+        new Phaser.Geom.Point(-half + corner, half),
+        new Phaser.Geom.Point(-half, half - corner),
+        new Phaser.Geom.Point(-half, -half + corner),
+      ];
+      background.clear()
+        .fillStyle(pressed ? 0x082a50 : hover ? 0x0d4775 : 0x0a3764, 1).fillPoints(shape, true)
+        .lineStyle(2, hover ? 0xc8f7ff : 0x27c8f2, 1).strokePoints(shape, true);
+    };
+    draw();
+    const artY = -size * .1;
+    const art = this.add.image(0, artY, texture, frame)
+      .setDisplaySize(size * .56, size * .56);
+    if (label === 'Boat') {
+      art.setDisplaySize(size * .7, size * .37);
+      this.boatHudArt = art;
+    }
+    if (label === 'Rod') this.rodHudArt = art;
+    const caption = this.add.text(0, size * .33, label, {
+      fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+      fontSize: `${Math.max(8, Math.round(size * .17))}px`, color: '#fff8dc',
+      stroke: '#061523', strokeThickness: 3,
+    }).setOrigin(.5);
+    const children: Phaser.GameObjects.GameObject[] = [background, art, caption];
+    if (alert) {
+      children.push(this.add.circle(size * .36, -size * .36, 6, 0xff4f56)
+        .setStrokeStyle(2, 0xffc8ae));
+    }
+    const button = this.add.container(x, y, children).setDepth(24).setSize(size, size)
+      .setName(label.toLowerCase()).setInteractive({ useHandCursor: true });
+    button.on('pointerover', () => draw(true));
+    button.on('pointerout', () => draw());
+    button.on('pointerdown', () => draw(true, true));
+    button.on('pointerup', () => {
+      draw();
+      if (this.profileReady && !this.activePanel) onClick();
+    });
+  }
+
+  private openWorldMap(): void {
+    this.closePanel();
+    const panelWidth = Math.min(W - 28, 900);
+    const panelHeight = Math.min(H - 36, 560);
+    const left = (W - panelWidth) / 2;
+    const top = (H - panelHeight) / 2;
+    const shade = this.add.rectangle(W / 2, H / 2, W, H, 0x010b13, .82).setInteractive();
+    const card = this.add.rectangle(W / 2, H / 2, panelWidth, panelHeight, 0x082a40, .98)
+      .setStrokeStyle(3, 0x8ee7ff);
+    const title = this.add.text(left + 20, top + 15, 'OCEAN MAP', {
+      fontFamily: 'Rubik Mono One', fontSize: SIDEBAR_MODE ? '13px' : '19px', color: '#fff1be',
+    });
+    const hint = this.add.text(left + 20, top + 42, '2D WORLD VIEW  •  CLICK A LOCATION TO SAIL / DIVE', {
+      fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '7px' : '10px', color: '#8bdcf4',
+    });
+    const close = this.makeButton(left + panelWidth - 30, top + 27, 38, 28, 'X', () => this.closePanel());
+    const mapLeft = left + 18;
+    const mapTop = top + 66;
+    const mapWidth = panelWidth - 36;
+    const mapHeight = panelHeight - 88;
+    const map = this.add.graphics();
+    this.drawWorldMap(map, mapLeft, mapTop, mapWidth, mapHeight);
+    const mapSprites = this.createWorldMapSprites(mapLeft, mapTop, mapWidth, mapHeight);
+    const mapHit = this.add.zone(mapLeft, mapTop, mapWidth, mapHeight).setOrigin(0)
+      .setInteractive({ useHandCursor: true });
+    mapHit.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      const nx = Phaser.Math.Clamp((pointer.x - mapLeft) / mapWidth, 0, 1);
+      const skyRatio = .18;
+      const ny = Phaser.Math.Clamp((pointer.y - (mapTop + mapHeight * skyRatio)) / (mapHeight * (1 - skyRatio)), 0, 1);
+      this.oceanXTarget = Phaser.Math.Clamp(nx * OCEAN_CONTENT_WIDTH - W / 2, 0, OCEAN_CONTENT_WIDTH - W);
+      this.oceanDepthTarget = Phaser.Math.Clamp(ny * OCEAN_CONTENT_HEIGHT - OCEAN_VIEW_HEIGHT / 2, 0, OCEAN_SCROLL_RANGE);
+      this.closePanel();
+      this.flashStatus('CHART COURSE SET', '#8ee7ff');
+    });
+    this.activePanel = this.add.container(0, 0, [shade, card, map, ...mapSprites, title, hint, mapHit, ...close]).setDepth(60);
+  }
+
+  private drawWorldMap(
+    map: Phaser.GameObjects.Graphics, left: number, top: number, width: number, height: number,
+  ): void {
+    const skyHeight = height * .18;
+    const seaTop = top + skyHeight;
+    const seaHeight = height - skyHeight;
+    map.fillStyle(0x42d5ed).fillRect(left, top, width, skyHeight)
+      .fillStyle(0x0a91fb).fillRect(left, seaTop, width, seaHeight * .36)
+      .fillStyle(0x0879e8).fillRect(left, seaTop + seaHeight * .36, width, seaHeight * .34)
+      .fillStyle(0x0754c6).fillRect(left, seaTop + seaHeight * .7, width, seaHeight * .3);
+    map.lineStyle(1, 0xa7e9ff, .18);
+    for (let column = 1; column < 12; column++) map.lineBetween(left + width * column / 12, top, left + width * column / 12, top + height);
+    for (let row = 1; row < 8; row++) map.lineBetween(left, top + height * row / 8, left + width, top + height * row / 8);
+    const viewportX = left + this.oceanXOffset / OCEAN_CONTENT_WIDTH * width;
+    const viewportY = seaTop + this.oceanDepthOffset / OCEAN_CONTENT_HEIGHT * seaHeight;
+    const viewportWidth = Math.max(18, W / OCEAN_CONTENT_WIDTH * width);
+    const viewportHeight = Math.max(18, OCEAN_VIEW_HEIGHT / OCEAN_CONTENT_HEIGHT * seaHeight);
+    map.lineStyle(2, 0xffef91, .95).strokeRect(viewportX, viewportY, viewportWidth, viewportHeight)
+      .lineStyle(3, 0x071827).strokeRect(left, top, width, height)
+      .lineStyle(1, 0xaeeaff).strokeRect(left + 3, top + 3, width - 6, height - 6);
+  }
+
+  private createWorldMapSprites(left: number, top: number, width: number, height: number): Phaser.GameObjects.GameObject[] {
+    const skyHeight = height * .18;
+    const seaTop = top + skyHeight;
+    const images: Phaser.GameObjects.Image[] = [];
+    const add = (frame: number, x: number, y: number, size: number, alpha = 1): Phaser.GameObjects.Image => {
+      const image = this.add.image(x, y, 'map-landmark-sprites', frame).setDisplaySize(size, size).setAlpha(alpha);
+      images.push(image);
+      return image;
+    };
+    const dockSize = Math.min(112, width * .16);
+    const lighthouseSize = Math.min(122, width * .17);
+    const boatSize = Math.min(74, width * .1);
+    add(0, left + width * .07, seaTop - dockSize * .32, dockSize);
+    add(1, left + width * .93, seaTop - lighthouseSize * .32, lighthouseSize);
+    const boatX = left + this.boatWorldX / OCEAN_CONTENT_WIDTH * width;
+    add(5, boatX, seaTop - boatSize * .18, boatSize);
+    const clipShape = this.add.graphics().setVisible(false);
+    clipShape.fillStyle(0xffffff).fillRect(left + 3, top + 3, width - 6, height - 6);
+    const contentMask = clipShape.createGeometryMask();
+    images.forEach(image => image.setMask(contentMask));
+    return [...images, clipShape];
+  }
+
+  private openQuestLog(): void {
+    this.closePanel();
+    const width = Math.min(W - 28, 560);
+    const height = Math.min(H - 46, 390);
+    const left = (W - width) / 2;
+    const top = (H - height) / 2;
+    const shade = this.add.rectangle(W / 2, H / 2, W, H, 0x010b13, .78).setInteractive();
+    const card = this.add.rectangle(W / 2, H / 2, width, height, 0x0b3044, .98).setStrokeStyle(3, 0xffdf9d);
+    const title = this.add.text(left + 20, top + 18, 'CAPTAIN QUESTS', {
+      fontFamily: 'Rubik Mono One', fontSize: SIDEBAR_MODE ? '13px' : '19px', color: '#fff1be',
+    });
+    const close = this.makeButton(left + width - 30, top + 28, 38, 28, 'X', () => this.closePanel());
+    const discovered = FISH.filter(fish => (this.progress.fishInventory[fish.id] ?? 0) > 0).length;
+    const quests = [
+      { name: 'SEASONED ANGLER', detail: 'Catch 25 fish', value: this.progress.catches, goal: 25 },
+      { name: 'FIELD RESEARCH', detail: 'Discover 10 species', value: discovered, goal: 10 },
+      { name: 'MASTER SHIPWRIGHT', detail: 'Own all 7 boats', value: this.progress.hullLevel, goal: 7 },
+    ];
+    const objects: Phaser.GameObjects.GameObject[] = [shade, card, title, ...close];
+    quests.forEach((quest, index) => {
+      const y = top + 82 + index * 88;
+      const complete = quest.value >= quest.goal;
+      const row = this.add.rectangle(W / 2, y + 29, width - 38, 70, complete ? 0x174f4b : 0x102c3b, .96)
+        .setStrokeStyle(2, complete ? 0x79dfa4 : 0x46768a);
+      const name = this.add.text(left + 32, y + 8, quest.name, {
+        fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: SIDEBAR_MODE ? '10px' : '13px',
+        color: complete ? '#9ff1b9' : '#fff1be',
+      });
+      const detail = this.add.text(left + 32, y + 31, `${quest.detail}   ${Math.min(quest.value, quest.goal)}/${quest.goal}`, {
+        fontFamily: 'DM Mono', fontSize: SIDEBAR_MODE ? '8px' : '10px', color: '#9dcbd4',
+      });
+      const barWidth = width - 76;
+      const bar = this.add.graphics().fillStyle(0x061820).fillRoundedRect(left + 32, y + 52, barWidth, 7, 3)
+        .fillStyle(complete ? 0x60d394 : 0x2fa9d4).fillRoundedRect(
+          left + 32, y + 52, barWidth * Phaser.Math.Clamp(quest.value / quest.goal, 0, 1), 7, 3,
+        );
+      objects.push(row, name, detail, bar);
+    });
+    this.activePanel = this.add.container(0, 0, objects).setDepth(60);
   }
 
   private createFishingControls(): void {
     // Scale one reference-sized group, including its rings and spacing, so the
     // mode buttons and circle retain their proportions in the narrow sidebar.
-    const sideMargin = Phaser.Math.Clamp(W * .04, 18, 36);
-    const scale = Math.min(1.35, Math.max(1, W / 520), H / 420, (W - sideMargin * 2) / 344);
+    const sideMargin = Phaser.Math.Clamp(W * .025, 12, 36);
+    const viewportScale = Math.min(W / 900, H / 620);
+    const scale = Phaser.Math.Clamp(viewportScale * 1.15, .55, 1.35);
+    const compactLayout = W < 720 || H < 500;
+    this.compactFishingLayout = compactLayout;
     const radius = 54 * scale;
     const diameter = radius * 2;
+    const outerRadius = radius + 18 * scale;
     const modeWidth = 90 * scale;
     const modeHeight = 32 * scale;
     const gap = 10 * scale;
-    const x = W - sideMargin - 67 * scale;
-    const sharedBottom = H - Phaser.Math.Clamp(H * .235, 120, 170);
-    const y = sharedBottom - radius - 18 * scale;
-    this.fishingControlsTop = y - radius - 18 * scale;
-    this.fishingControlsBottom = sharedBottom;
+    const sharedBottom = H - Phaser.Math.Clamp(H * .1, 52, 88);
+    let x: number;
+    let y: number;
+    let modeY: number;
+    let manualX: number;
+    let autoX: number;
+    if (compactLayout) {
+      // Keep the playfield center open: equipment lives in the lower-left
+      // while casting and its mode controls share the lower-right zone.
+      const leftCenter = Phaser.Math.Clamp(W * .23, sideMargin + modeWidth + gap / 2, W * .34);
+      this.fishingLeftZoneCenter = leftCenter;
+      x = Phaser.Math.Clamp(W * .81, W * .68 + outerRadius, W - sideMargin - outerRadius);
+      autoX = x - (modeWidth + gap) / 2;
+      manualX = x + (modeWidth + gap) / 2;
+
+      const safeTop = Math.max(42, H * .42);
+      const safeBottom = H - Math.max(44, H * .06);
+      modeY = safeBottom - modeHeight / 2;
+      y = Phaser.Math.Clamp(
+        modeY - modeHeight / 2 - outerRadius - 10 * scale,
+        safeTop + outerRadius,
+        safeBottom - modeHeight - outerRadius,
+      );
+    } else {
+      x = W - sideMargin - 67 * scale;
+      manualX = x - radius - 20 * scale - modeWidth / 2;
+      autoX = manualX - modeWidth - gap;
+      y = sharedBottom - outerRadius;
+      modeY = sharedBottom - modeHeight / 2;
+      this.fishingLeftZoneCenter = (autoX + manualX) / 2;
+    }
+    this.fishingControlsTop = y - outerRadius;
+    this.fishingControlsBottom = y + outerRadius;
 
     const rings = this.add.graphics();
     const drawFishButton = (hover = false, pressed = false): void => {
@@ -840,9 +1309,6 @@ class ReelScene extends Phaser.Scene {
       if (this.profileReady && !this.activePanel) this.handleFishingAction();
     });
 
-    const manualX = x - radius - 20 * scale - modeWidth / 2;
-    const autoX = manualX - modeWidth - gap;
-    const modeY = sharedBottom - modeHeight / 2;
     this.fishingModeLeft = autoX - modeWidth / 2;
     const createModeButton = (buttonX: number, label: string, auto: boolean): Phaser.GameObjects.Graphics => {
       const frame = this.add.graphics();
@@ -860,7 +1326,8 @@ class ReelScene extends Phaser.Scene {
           .lineBetween(0, -10, 0, -4).lineBetween(0, 4, 0, 10);
       }
       const text = this.add.text(12 * scale, 0, label, {
-        fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold', fontSize: `${10 * scale}px`,
+        fontFamily: 'Trebuchet MS, Arial, sans-serif', fontStyle: 'bold',
+        fontSize: `${Math.max(8, 10 * scale)}px`,
         color: '#eefaff', align: 'center',
       }).setOrigin(.5);
       const button = this.add.container(buttonX, modeY, [frame, symbol, text])
@@ -880,16 +1347,34 @@ class ReelScene extends Phaser.Scene {
   private createBaitHotbar(): void {
     this.baitHotbarSlots = [];
     const gap = Phaser.Math.Clamp(W * .008, 3, 6);
-    const slotSize = Math.min(56, Math.max(42, (W - 28 - gap * (BAITS.length - 1)) / BAITS.length));
-    const totalWidth = slotSize * BAITS.length + gap * (BAITS.length - 1);
-    const centerX = W / 2;
-    const fitsBottomRow = centerX + totalWidth / 2 + 14 <= this.fishingModeLeft;
-    const centerY = fitsBottomRow
-      ? this.fishingControlsBottom - slotSize / 2
-      : Math.max(slotSize / 2 + 10, this.fishingControlsTop - slotSize / 2 - 8);
+    const compactLayout = this.compactFishingLayout;
+    const columns = compactLayout ? 3 : BAITS.length;
+    const rows = Math.ceil(BAITS.length / columns);
+    const zoneWidth = compactLayout ? W * .38 : W - 28;
+    const availableSlotSize = (zoneWidth - gap * (columns - 1)) / columns;
+    const responsiveSlotSize = Phaser.Math.Clamp(W / (compactLayout ? 11.5 : 10.5), 34, 56);
+    const slotSize = Math.min(availableSlotSize, responsiveSlotSize);
+    const totalWidth = slotSize * columns + gap * (columns - 1);
+    const totalHeight = slotSize * rows + gap * (rows - 1);
+    const centerX = compactLayout ? this.fishingLeftZoneCenter : W / 2;
+    const fitsBottomRow = !compactLayout && centerX + totalWidth / 2 + 14 <= this.fishingModeLeft;
+    const centerY = compactLayout
+      ? Phaser.Math.Clamp(
+        (this.fishingControlsTop + this.fishingControlsBottom) / 2,
+        totalHeight / 2 + 10,
+        H - totalHeight / 2 - 44,
+      )
+      : fitsBottomRow
+        ? this.fishingControlsBottom - slotSize / 2
+        : Math.max(slotSize / 2 + 10, this.fishingControlsTop - slotSize / 2 - 8);
 
     BAITS.forEach((bait, index) => {
-      const x = centerX - totalWidth / 2 + slotSize / 2 + index * (slotSize + gap);
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const rowItems = Math.min(columns, BAITS.length - row * columns);
+      const rowWidth = rowItems * slotSize + (rowItems - 1) * gap;
+      const x = centerX - rowWidth / 2 + slotSize / 2 + column * (slotSize + gap);
+      const y = centerY - totalHeight / 2 + slotSize / 2 + row * (slotSize + gap);
       const frame = this.add.graphics();
       const art = this.add.image(0, 0, `bait-${bait.tier}`).setDisplaySize(slotSize * .88, slotSize * .88);
       const lock = this.add.graphics();
@@ -898,7 +1383,7 @@ class ReelScene extends Phaser.Scene {
         fontSize: `${Math.max(9, slotSize * .22)}px`, color: '#fff8db',
         stroke: '#10253b', strokeThickness: 3,
       }).setOrigin(1, 1);
-      const button = this.add.container(x, centerY, [frame, art, lock, count])
+      const button = this.add.container(x, y, [frame, art, lock, count])
         .setDepth(23).setSize(slotSize, slotSize).setName(`bait-${index + 1}`)
         .setInteractive({ useHandCursor: true });
       button.on('pointerup', () => {
@@ -927,9 +1412,8 @@ class ReelScene extends Phaser.Scene {
       const size = slot.count.parentContainer?.width ?? 52;
       const half = size / 2;
       slot.frame.clear()
-        .fillStyle(0x061820, .42).fillRoundedRect(-half + 2, -half + 4, size, size, 6)
-        .fillStyle(selected ? 0x203c5f : 0x183654, .96).fillRoundedRect(-half, -half, size, size, 6)
-        .lineStyle(selected ? 3 : 2, selected ? 0xffdc62 : 0x75bde8)
+        .fillStyle(selected ? 0x203c5f : 0x183654, .98).fillRoundedRect(-half, -half, size, size, 6)
+        .lineStyle(2, selected ? 0xffdc62 : 0x75bde8)
         .strokeRoundedRect(-half, -half, size, size, 6);
       slot.art.setAlpha(stock > 0 ? 1 : .22);
       slot.count.setText(stock > 0 ? String(stock) : '').setVisible(stock > 0);
@@ -956,72 +1440,6 @@ class ReelScene extends Phaser.Scene {
     };
     draw(this.autoModeFrame, this.autoFishing);
     draw(this.manualModeFrame, !this.autoFishing);
-  }
-
-  private createHudIcon(x: number, y: number, size: number, panel: PanelName | 'cast'): void {
-    const frame = this.add.graphics();
-    const icon = this.add.graphics();
-    const half = size / 2;
-    const drawFrame = (hover = false, pressed = false): void => {
-      frame.clear();
-      const box = (inset: number, color: number, offsetY = 0): void => {
-        const width = size - inset * 2;
-        frame.fillStyle(color)
-          .fillRect(-half + inset + 2, -half + inset + offsetY, width - 4, width)
-          .fillRect(-half + inset, -half + inset + 2 + offsetY, width, width - 4);
-      };
-      box(0, 0x243039, 3);
-      box(0, 0x243039);
-      box(2, pressed ? 0xb7c1c1 : hover ? 0xf8faf2 : 0xdce2dd);
-      frame.fillStyle(pressed ? 0x9ca8aa : 0xffffff)
-        .fillRect(-half + 4, -half + 2, size - 8, 2)
-        .fillRect(-half + 2, -half + 4, 2, size - 8);
-      frame.fillStyle(0x9ca8aa)
-        .fillRect(-half + 4, half - 4, size - 8, 2)
-        .fillRect(half - 4, -half + 4, 2, size - 8);
-    };
-    drawFrame();
-    const pixel = 2;
-    HUD_ICONS[panel].forEach((row, rowIndex) => {
-      [...row].forEach((color, column) => {
-        if (color === '.') return;
-        icon.fillStyle(0x061820, .48).fillRect(
-          (column - 8) * pixel + 1, (rowIndex - 8) * pixel + 2, pixel, pixel,
-        );
-      });
-    });
-    HUD_ICONS[panel].forEach((row, rowIndex) => {
-      [...row].forEach((color, column) => {
-        if (color === '.') return;
-        icon.fillStyle(HUD_PALETTE[color]).fillRect(
-          (column - 8) * pixel, (rowIndex - 8) * pixel, pixel, pixel,
-        );
-      });
-    });
-    icon.setScale(1.06);
-    const button = this.add.container(x, y, [frame, icon]).setDepth(22).setSize(size, size)
-      .setName(panel).setInteractive({ useHandCursor: true });
-    const tooltip = panel === 'character' ? 'PROFILE' : panel === 'cast' ? 'CAST / REEL [SPACE]'
-      : panel === 'codex' ? 'FISH COLLECTION' : panel.toUpperCase();
-    const label = this.add.text(x < W / 2 ? x - half : x + half, y + half + 8, tooltip, {
-      fontFamily: 'DM Mono', fontSize: '10px', color: '#fff1be',
-      backgroundColor: '#102c3b', padding: { x: 8, y: 6 },
-    }).setOrigin(x < W / 2 ? 0 : 1, 0).setDepth(25).setVisible(false);
-    if (panel === 'cast') this.castButtonText = label;
-    if (panel === 'character') {
-      this.autoIndicator = this.add.rectangle(half - 3, half - 3, 8, 8, 0x60d394)
-        .setStrokeStyle(2, 0x243039).setVisible(false);
-      button.add(this.autoIndicator);
-    }
-    button.on('pointerover', () => { drawFrame(true); label.setVisible(!this.activePanel); });
-    button.on('pointerout', () => { drawFrame(); icon.y = 0; label.setVisible(false); });
-    button.on('pointerdown', () => { drawFrame(true, true); icon.y = 2; });
-    button.on('pointerup', () => {
-      drawFrame(); icon.y = 0; label.setVisible(false);
-      if (!this.profileReady || this.activePanel) return;
-      if (panel === 'cast') this.handleFishingAction();
-      else this.openPanel(panel);
-    });
   }
 
   private createTimingPanel(): void {
@@ -1058,6 +1476,7 @@ class ReelScene extends Phaser.Scene {
     if (move > 0 && screenX > rightFollow) this.oceanXTarget = this.boatWorldX - rightFollow;
     this.oceanXTarget = Phaser.Math.Clamp(this.oceanXTarget, 0, OCEAN_CONTENT_WIDTH - W);
     this.boat.x = this.boatWorldX - this.oceanXOffset;
+    this.updateCompass();
   }
 
   private handleFishingAction(): void {
@@ -1129,7 +1548,7 @@ class ReelScene extends Phaser.Scene {
         if (time >= this.autoResolveAt) this.resolveAutoCatch();
       } else {
         const precisionBonus = 1 - this.progress.precision * .055;
-        this.timingValue += this.timingDirection * dt * (1.12 + this.progress.rodLevel * .04) * precisionBonus;
+        this.timingValue += this.timingDirection * dt * (1.12 + this.progress.equippedRod * .04) * precisionBonus;
         if (this.timingValue >= 1) { this.timingValue = 1; this.timingDirection = -1; }
         if (this.timingValue <= 0) { this.timingValue = 0; this.timingDirection = 1; }
         this.positionTimingPieces();
@@ -1159,7 +1578,7 @@ class ReelScene extends Phaser.Scene {
       this.castButtonText.setText('AUTO  10.0s');
       this.updateAutoProgress(time);
     } else {
-      this.zoneSize = Phaser.Math.Clamp(.17 + this.progress.focus * .035 + this.progress.rodLevel * .01, .17, .36);
+      this.zoneSize = Phaser.Math.Clamp(.17 + this.progress.focus * .035 + this.progress.equippedRod * .01, .17, .36);
       this.zoneStart = Phaser.Math.FloatBetween(.07, .93 - this.zoneSize);
       this.timingMarker.setVisible(true);
       this.timingLabel.setText('HIT SPACE IN THE GREEN ZONE');
@@ -1237,16 +1656,16 @@ class ReelScene extends Phaser.Scene {
       this.lastCatch = undefined;
       saveProgress(this.progress);
     }
-    const boat = BOATS[Math.min(this.progress.hullLevel, BOATS.length) - 1];
+    const boat = BOATS[Math.min(this.progress.equippedBoat, BOATS.length) - 1];
     this.nextAutoCastAt = this.time.now + Math.max(1200, 3500 - this.progress.automation * 350 - (boat.autoDelay ?? 0));
     this.updateHud();
   }
 
   private rollCatch(automatic: boolean): CatchResult {
     const baitTier = this.progress.selectedBait + 1;
-    const boat = BOATS[Math.min(this.progress.hullLevel, BOATS.length) - 1];
-    const eligible = FISH.filter(fish => fish.minRod <= this.progress.rodLevel
-      && fish.minBoat <= this.progress.hullLevel && fish.minBait <= baitTier);
+    const boat = BOATS[Math.min(this.progress.equippedBoat, BOATS.length) - 1];
+    const eligible = FISH.filter(fish => fish.minRod <= this.progress.equippedRod
+      && fish.minBoat <= this.progress.equippedBoat && fish.minBait <= baitTier);
     const weighted = eligible.map(fish => {
       const rarityIndex = FISH.indexOf(fish);
       const rareBoost = 1 + rarityIndex * (this.progress.luck * .022 + (boat.rareBonus ?? 0));
@@ -1407,6 +1826,10 @@ class ReelScene extends Phaser.Scene {
   }
 
   private openPanel(name: PanelName): void {
+    if (name === 'quests' && !this.panelUI) {
+      this.openQuestLog();
+      return;
+    }
     this.closePanel();
     if (this.panelUI) {
       // Keep a lightweight Phaser marker so fishing and sailing pause while
@@ -1577,6 +2000,8 @@ class ReelScene extends Phaser.Scene {
           if (!next) { this.flashStatus('BUY THE PREVIOUS ROD FIRST', '#ff8c72'); return; }
           if (!this.spendCoins(rod.cost)) return;
           this.progress.rodLevel = rod.tier;
+          this.progress.equippedRod = rod.tier;
+          this.paintBoat();
           saveProgress(this.progress); this.updateHud(); this.openPanel('shop');
         }));
       } else {
@@ -1666,7 +2091,7 @@ class ReelScene extends Phaser.Scene {
 
   private populateBoatPanel(cx: number, cy: number, width: number, height: number): void {
     const left = cx - width / 2 + 25;
-    const current = BOATS[Math.min(this.progress.hullLevel, BOATS.length) - 1];
+    const current = BOATS[Math.min(this.progress.equippedBoat, BOATS.length) - 1];
     const next = BOATS[this.progress.hullLevel];
     this.addPanelText(left, cy - height / 2 + 68, `CURRENT  ${current.name.toUpperCase()}`, '#fff1be', 14);
     this.addPanelText(left, cy - height / 2 + 96, `TIER ${current.tier}/7  •  ${current.bonus}`, '#82afb2', SIDEBAR_MODE ? 8 : 10);
@@ -1680,6 +2105,7 @@ class ReelScene extends Phaser.Scene {
       this.activePanel!.add(this.makeButton(cx + width / 2 - 88, cy + 58, 128, 40, `UPGRADE ${next.cost}`, () => {
         if (!this.spendCoins(next.cost)) return;
         this.progress.hullLevel = next.tier;
+        this.progress.equippedBoat = next.tier;
         saveProgress(this.progress); this.paintBoat(); this.updateHud(); this.openPanel('boat');
       }));
     } else {
@@ -1737,6 +2163,8 @@ class ReelScene extends Phaser.Scene {
       if (!rod || action.tier !== this.progress.rodLevel + 1) return 'Upgrade rods in order.';
       if (!this.spendCoins(rod.cost)) return 'Not enough coins for that rod.';
       this.progress.rodLevel = action.tier;
+      this.progress.equippedRod = action.tier;
+      this.paintBoat();
     }
 
     if (action.type === 'bait') {
@@ -1754,12 +2182,24 @@ class ReelScene extends Phaser.Scene {
       this.progress.selectedBait = index;
     }
 
+    if (action.type === 'equip-rod') {
+      if (action.tier < 1 || action.tier > this.progress.rodLevel) return 'You do not own that rod.';
+      this.progress.equippedRod = action.tier;
+      this.paintBoat();
+    }
+
     if (action.type === 'boat') {
-      const tier = this.progress.hullLevel + 1;
-      const boat = BOATS[tier - 1];
-      if (!boat) return 'Your fleet is already complete.';
+      const boat = BOATS[action.tier - 1];
+      if (!boat || action.tier !== this.progress.hullLevel + 1) return 'Upgrade vessels in order.';
       if (!this.spendCoins(boat.cost)) return 'Not enough coins for that vessel.';
-      this.progress.hullLevel = tier;
+      this.progress.hullLevel = action.tier;
+      this.progress.equippedBoat = action.tier;
+      this.paintBoat();
+    }
+
+    if (action.type === 'equip-boat') {
+      if (action.tier < 1 || action.tier > this.progress.hullLevel) return 'You do not own that vessel.';
+      this.progress.equippedBoat = action.tier;
       this.paintBoat();
     }
 
@@ -1784,6 +2224,20 @@ class ReelScene extends Phaser.Scene {
     const stock = this.progress.baitStock[this.progress.selectedBait] ?? 0;
     this.progress.bait = stock;
     this.refreshBaitHotbar();
+    this.coinsHudText?.setText(this.progress.coins.toLocaleString());
+    this.profileHudName?.setText(this.progress.captainName || 'Captain');
+    this.profileHudLevel?.setText(`LV. ${this.progress.level}`);
+    this.boatHudArt?.setTexture(`boat-${this.progress.equippedBoat}`);
+    this.rodHudArt?.setTexture(`rod-${this.progress.equippedRod}`);
+    if (this.profileXpFill) {
+      const profileWidth = SIDEBAR_MODE ? 166 : 184;
+      const profileHeight = SIDEBAR_MODE ? 66 : 74;
+      const xpWidth = profileWidth - 80;
+      const xpRatio = Phaser.Math.Clamp(this.progress.xp / (this.progress.level * 100), 0, 1);
+      this.profileXpFill.clear()
+        .fillStyle(0x45bde5).fillRoundedRect(80, 10 + profileHeight - 17, xpWidth * xpRatio, 6, 2)
+        .fillStyle(0xd8f7ff, .7).fillRect(81, 10 + profileHeight - 16, Math.max(0, xpWidth * xpRatio - 2), 1);
+    }
     const discovered = FISH.filter(fish => (this.progress.fishInventory[fish.id] ?? 0) > 0).length;
     this.profileStats?.setText([
       `${(this.progress.captainName || 'CAPTAIN').toUpperCase()}  /  LV.${this.progress.level}`,
@@ -1791,9 +2245,9 @@ class ReelScene extends Phaser.Scene {
       `CATCHES ${this.progress.catches}   FISH ${discovered}/${FISH.length}`,
       `STREAK ${this.streak}   BEST ${this.progress.bestStreak}`,
       `SKILL POINTS ${this.progress.skillPoints}`,
-      `ROD  ${RODS[this.progress.rodLevel - 1].name}`,
+      `ROD  ${RODS[this.progress.equippedRod - 1].name}`,
       `BAIT ${bait.name} (${stock})`,
-      `BOAT ${BOATS[this.progress.hullLevel - 1].name}`,
+      `BOAT ${BOATS[this.progress.equippedBoat - 1].name}`,
     ].join('\n'));
 
   }

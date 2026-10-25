@@ -1,6 +1,7 @@
 .panel-overlay { position: absolute; inset: 0; z-index: 8; display: grid; place-items: center; padding: 16px; background: #071b25bd; container-type: inline-size; }
 .panel-overlay[hidden] { display: none; }
 .pixel-panel { --ink: #4c352b; --muted: #796044; width: min(820px, 100%); max-height: 100%; display: flex; flex-direction: column; color: var(--ink); background: #ead6a3; border: 3px solid #362f2c; box-shadow: 0 0 0 3px #b07b4b, 0 0 0 5px #49352e, 6px 8px 0 #07141d90; font: 12px 'DM Mono', monospace; text-align: left; }
+.pixel-panel:focus { outline: none; }
 .pixel-panel * { box-sizing: border-box; }
 .pixel-panel button { font: inherit; border-radius: 0; cursor: pointer; }
 .pixel-panel button:focus-visible { outline: 3px solid #fff5c8; outline-offset: 3px; box-shadow: 0 0 0 5px #22645c; z-index: 2; }
@@ -25,12 +26,12 @@
 .wallet .pixel-icon { width: 22px; height: 22px; }
 .collection-layout, .talent-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(190px, 1fr); gap: 16px; align-items: stretch; }
 .item-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 10px; background: #755039; border: 3px solid #4d352b; box-shadow: inset 2px 2px #a77a4f, 2px 3px #c2a16a; }
-.item-slot { position: relative; aspect-ratio: 1; min-width: 0; width: 100%; display: grid; place-items: center; background: #ba915f; border: 2px solid #5d402f; box-shadow: inset 2px 2px #d4b67d, inset -2px -2px #8f653f; color: #fff0c6; }
+.item-slot { position: relative; aspect-ratio: 1; min-width: 0; width: 100%; overflow: hidden; display: grid; place-items: center; background: #ba915f; border: 2px solid #5d402f; box-shadow: inset 2px 2px #d4b67d, inset -2px -2px #8f653f; color: #fff0c6; }
 .item-slot .pixel-icon { width: 70%; height: 70%; max-width: 52px; max-height: 52px; filter: drop-shadow(1px 2px 0 #352c2c50); }
 .item-slot:hover:not(.empty) { background: #d0ac73; }
 .item-slot.selected { border-color: #254b44; outline: 2px solid #67b59e; outline-offset: -4px; background: #b5b58a; }
 .item-slot.empty { color: #7e5d3e; background: #a98558; box-shadow: inset 2px 2px #8a6542, inset -2px -2px #c6a574; font-size: 20px; }
-.slot-count { position: absolute; right: 3px; bottom: 1px; font-size: 10px; line-height: 1.4; text-shadow: 1px 1px #3c3329, -1px 0 #3c3329; }
+.slot-count { position: absolute; z-index: 1; right: 3px; bottom: 1px; font-size: 10px; line-height: 1.4; text-shadow: 1px 1px #3c3329, -1px 0 #3c3329; }
 .locked-slot .pixel-icon, .undiscovered .pixel-icon { opacity: .48; }
 .grid-caption { padding: 12px 2px 0; font-size: 10px; color: var(--muted); line-height: 1.6; }
 .item-detail { min-width: 0; padding: 16px; background: #f1e0b4; border: 2px solid #b28b57; box-shadow: inset 2px 2px #fff0c9, inset -2px -2px #d5b985; display: flex; flex-direction: column; align-items: flex-start; }
@@ -73,7 +74,7 @@
 .auto-setting p { margin: 5px 0 0; font-size: 10px; line-height: 1.5; color: #796044; }
 .auto-switch { min-width: 65px; }
 .ship-display { padding: 14px; background: #b9c1a4; border: 3px solid #785739; text-align: center; box-shadow: inset 3px 3px #899f8e; }
-.ship-preview { width: 100%; max-height: 180px; image-rendering: pixelated; }
+.ship-preview { width: 100%; height: 150px; object-fit: contain; image-rendering: pixelated; }
 .ship-display > span { display: block; font-size: 11px; padding-top: 10px; }
 .boat-slots { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; margin-top: 12px; }
 .talent-panel { --ink: #4b3328; --muted: #80613f; width: min(920px, 100%); background: #e8ca91; border-color: #2e2622; box-shadow: 0 0 0 3px #a7653f, 0 0 0 6px #3a2924, 7px 9px 0 #07141da0; }
@@ -354,22 +355,29 @@
   height: 32px;
   background-repeat: no-repeat;
   background-size: 400% 200%;
-  image-rendering: pixelated;
+  image-rendering: auto;
   filter: drop-shadow(1px 2px 0 #3e281f66);
 }
 
 .pixel-sprite {
   width: 82%;
   height: 82%;
-  image-rendering: pixelated;
+  image-rendering: auto;
   overflow: visible;
 }
 
-.fish-sprite { object-fit: contain; }
-.bait-sprite { object-fit: contain; }
+.fish-sprite, .bait-sprite, .rod-sprite, .boat-sprite { object-fit: contain; }
+.item-slot .pixel-sprite {
+  width: 100%;
+  height: 100%;
+  transform: scale(1.12);
+}
 .detail-art .pixel-sprite.bait-sprite { width: 64px; height: 64px; max-width: 100%; }
+.detail-art .pixel-sprite.rod-sprite { width: 68px; height: 68px; max-width: 100%; }
+.detail-art .pixel-sprite.boat-sprite { width: 70px; height: 58px; max-width: 100%; }
 .loadout-slot .bait-sprite { grid-row: 1; width: 43px; height: 43px; justify-self: center; }
-.equipment-card .bait-sprite { width: 42px; height: 42px; }
+.loadout-slot .rod-sprite, .loadout-slot .boat-sprite { grid-row: 1; width: 48px; height: 43px; justify-self: center; }
+.equipment-card .bait-sprite, .equipment-card .rod-sprite, .equipment-card .boat-sprite { width: 48px; height: 42px; }
 .fish-silhouette { filter: brightness(0); opacity: .48; }
 .detail-art .pixel-sprite.fish-sprite, .inventory-detail-art .pixel-sprite.fish-sprite { width: 84px; height: 84px; max-width: 100%; }
 
@@ -459,12 +467,12 @@
   min-height: 166px;
   overflow: hidden;
   padding: 3px 5px 5px;
-  background: #70b7ce url('./assets/sky-backdrop-expanded-v2.png') center / cover no-repeat;
+  background: #70b7ce url('./assets/sky-backdrop-expanded-v3.png') center / cover no-repeat;
   border: 2px solid #5a3828;
   box-shadow: inset 2px 2px #d3f4ea, inset -2px -2px #8a5939, 0 0 0 1px #e5b968;
 }
 .inventory-portrait::after { content: ''; position: absolute; inset: auto 0 0; height: 30%; background: linear-gradient(#0000, #d4a364d9 34%); pointer-events: none; }
-.inventory-portrait > img { position: absolute; z-index: 1; top: 0; left: 50%; width: 124px; height: 134px; object-fit: contain; transform: translateX(-50%); image-rendering: pixelated; filter: drop-shadow(2px 3px #3e2c254d); }
+.inventory-portrait > img { position: absolute; z-index: 1; top: 0; left: 50%; width: 124px; height: 134px; object-fit: contain; transform: translateX(-50%); image-rendering: auto; filter: drop-shadow(2px 3px #3e2c254d); }
 .inventory-portrait strong, .inventory-portrait span { position: relative; z-index: 2; color: #402b24; text-shadow: 1px 1px #f5d697; }
 .inventory-portrait strong { width: calc(100% + 10px); margin-inline: -5px; padding: 4px 3px; color: #fff0bd; background: #5f3928e8; font-size: 12px; text-shadow: 1px 1px #2b1c18; }
 .inventory-portrait span { margin-top: 3px; padding: 2px 7px; color: #4f3022; background: #f1d48fe8; font-size: 9px; text-shadow: none; }
@@ -631,8 +639,8 @@
 .pixel-panel[data-panel="character"] .stat-tile,
 .pixel-panel[data-panel="character"] .equipment-card,
 .pixel-panel[data-panel="character"] .auto-setting { background: linear-gradient(#f4d99b, #dfb773); border: 1px solid #aa774d; border-radius: 9px; box-shadow: inset 1px 1px #ffecb4; }
-.pixel-panel[data-panel="character"] .portrait-slot { overflow: hidden; background: #70b7ce url('./assets/sky-backdrop-expanded-v2.png') center / cover; border: 2px solid #5a3828; border-radius: 9px; box-shadow: inset 2px 2px #d3f4ea; }
-.pixel-panel[data-panel="character"] .portrait-slot img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.pixel-panel[data-panel="character"] .portrait-slot { overflow: hidden; background: #70b7ce url('./assets/sky-backdrop-expanded-v3.png') center / cover; border: 2px solid #5a3828; border-radius: 9px; box-shadow: inset 2px 2px #d3f4ea; }
+.pixel-panel[data-panel="character"] .portrait-slot img { width: 100%; height: 100%; object-fit: contain; image-rendering: auto; }
 .pixel-panel[data-panel="character"] .stat-tile strong { color: #1c6686; font-family: var(--inventory-ui-font); font-variant-numeric: tabular-nums; }
 .pixel-panel[data-panel="character"] .equipment-card .inventory-sprite { width: 42px; height: 42px; }
 .pixel-panel[data-panel="boat"] .ship-display { background: linear-gradient(#86dce2 0 70%, #d6ad72 70%); border: 1px solid #8a5e3d; border-radius: 9px; box-shadow: inset 1px 1px #d9f3e8; }
@@ -742,3 +750,46 @@
   margin-left: 0;
 }
 .pixel-panel[data-panel="codex"] .journal-layout .detail-stats { margin: 10px 0 8px; padding-top: 7px; border-top: 1px solid #c9ac78; }
+
+/* Quest board uses the same dockside panel language as the shop, inventory,
+   and shipyard instead of the older flat canvas dialog. */
+.pixel-panel[data-panel="quests"] { width: min(860px, calc(100% - 20px)); }
+.pixel-panel[data-panel="quests"] .panel-body { padding: 12px; }
+.quest-toolbar strong { color: #ffe18b; font-size: 13px; }
+.quest-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(210px, .72fr); gap: 10px; padding: 8px; background: #6f4632; border: 1px solid #4e362a; border-radius: 10px; box-shadow: inset 1px 1px #a87148, inset -1px -1px #462d28; }
+.quest-board { display: grid; gap: 8px; }
+.quest-card { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 11px; align-items: center; min-height: 105px; padding: 10px; color: #50382c; background: linear-gradient(#f4d99b, #dfb773); border: 1px solid #aa774d; border-radius: 9px; box-shadow: inset 1px 1px #fff0b4, inset -1px -1px #c18c57; }
+.quest-card.completed { background: linear-gradient(#d6d597, #b9bc78); border-color: #64734b; box-shadow: inset 1px 1px #eef0ba, inset -1px -1px #8d925c; }
+.quest-icon { position: relative; display: grid; place-items: center; width: 68px; height: 68px; background: linear-gradient(#83d8df, #4cafbd); border: 2px solid #365e68; border-radius: 9px; box-shadow: inset 2px 2px #c8f0e6, inset -2px -2px #347d8b; }
+.quest-icon .inventory-sprite { width: 58px; height: 58px; filter: drop-shadow(1px 2px #25444b80); }
+.quest-check { position: absolute; right: -5px; bottom: -5px; display: grid; place-items: center; width: 23px; height: 23px; color: #f7efbc; background: #34785c; border: 2px solid #284b3d; border-radius: 50%; font: 900 13px Arial, sans-serif; box-shadow: 0 0 0 2px #d9c27e; }
+.quest-copy { min-width: 0; }
+.quest-copy .eyebrow { color: #9c542f; font-size: 8px; letter-spacing: .08em; }
+.quest-copy h3 { margin: 3px 0 3px; color: #4d3025; font: 14px var(--inventory-ui-font); text-transform: uppercase; }
+.quest-copy p { margin: 0 0 8px; color: #79563c; font-size: 9px; line-height: 1.45; }
+.quest-meter, .quest-overall { height: 9px; overflow: hidden; background: #513c32; border: 1px solid #392a25; border-radius: 5px; box-shadow: inset 1px 1px #2d2522; }
+.quest-meter span, .quest-overall span { display: block; height: 100%; background: linear-gradient(90deg, #2a9ec0, #56d3df); box-shadow: inset 0 1px #aaf2eb; }
+.quest-card.completed .quest-meter span, .quest-card.completed + .quest-meter span { background: linear-gradient(90deg, #4b9b68, #76d28d); }
+.quest-count { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; color: #78523a; font-size: 8px; }
+.quest-count strong { color: #4e3429; font-size: 9px; }
+.quest-ledger { align-self: stretch; padding: 14px; color: #5f432f; background: #f4d898; border: 1px solid #aa774d; border-radius: 10px; box-shadow: inset 1px 1px #fff2bd, inset -1px -1px #c69963; }
+.quest-ledger-icon { display: grid; place-items: center; width: 78px; height: 78px; margin: 0 auto 12px; background: linear-gradient(#86dce2, #4eb8cb); border: 1px solid #35798c; border-radius: 9px; box-shadow: inset 1px 1px #d9f3e8; }
+.quest-ledger-icon .inventory-sprite { width: 68px; height: 68px; }
+.quest-ledger > .eyebrow { display: block; color: #a65c32; text-align: center; }
+.quest-ledger h3 { margin: 4px 0 10px; color: #553326; font: 16px var(--inventory-ui-font); text-align: center; }
+.quest-ledger p { margin: 0 0 12px; font-size: 10px; line-height: 1.55; }
+.quest-ledger .detail-stats { margin: 10px 0; padding-top: 8px; border-top: 1px solid #c49a62; }
+.quest-overall { height: 12px; margin: 13px 0 8px; }
+.quest-ledger small { display: block; color: #836244; font-size: 8px; line-height: 1.5; }
+
+@container (max-width: 600px) {
+  .quest-layout { grid-template-columns: 1fr; }
+  .quest-card { grid-template-columns: 58px minmax(0, 1fr); min-height: 92px; padding: 8px; }
+  .quest-icon { width: 56px; height: 56px; }
+  .quest-icon .inventory-sprite { width: 48px; height: 48px; }
+  .quest-ledger { display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 12px; align-items: start; }
+  .quest-ledger-icon { grid-row: 1 / 4; width: 62px; height: 62px; margin: 0; }
+  .quest-ledger-icon .inventory-sprite { width: 54px; height: 54px; }
+  .quest-ledger > .eyebrow, .quest-ledger h3 { text-align: left; }
+  .quest-ledger p, .quest-ledger .detail-stats, .quest-ledger .quest-overall, .quest-ledger small { grid-column: 1 / -1; }
+}

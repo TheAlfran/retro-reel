@@ -1,7 +1,7 @@
 import { HUD_ICONS, HUD_PALETTE } from './hud-icons';
 import type { Progress, FishDefinition, RodDefinition, BaitDefinition, BoatDefinition, PanelName, SkillKey } from './main';
 import './panels.css';
-import { baitSprite, fishSprite } from './sprite-art';
+import { baitSprite, boatSprite, fishSprite, rodSprite } from './sprite-art';
 
 const captainPortrait = new URL('./assets/starter-captain.png', import.meta.url).href;
 const inventorySpriteSheet = new URL('./assets/inventory-icons-v3.png', import.meta.url).href;
@@ -28,8 +28,9 @@ export interface PanelModel {
   progress: Progress; fish: FishDefinition[]; rods: RodDefinition[]; baits: BaitDefinition[]; boats: BoatDefinition[];
   autoFishing: boolean; streak: number;
 }
-export type PanelAction = { type: 'skill'; key: SkillKey } | { type: 'rod' | 'bait' | 'equip'; tier: number }
-  | { type: 'boat' | 'auto' };
+export type PanelAction = { type: 'skill'; key: SkillKey }
+  | { type: 'rod' | 'bait' | 'equip' | 'boat' | 'equip-rod' | 'equip-boat'; tier: number }
+  | { type: 'auto' };
 
 const escape = (value: string | number) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 const hex = (value: number) => `#${value.toString(16).padStart(6, '0')}`;
@@ -37,6 +38,7 @@ const titles: Record<PanelName, [string, string]> = {
   inventory: ['CATCH SATCHEL', 'Your haul, safely stowed'], shop: ['DOCKSIDE GOODS', 'Better tackle. Bigger stories.'],
   codex: ['FISH JOURNAL', 'Every catch has a story'], skills: ['CAPTAIN’S TALENTS', 'Chart your own course'],
   character: ['CAPTAIN’S LOG', 'A life on the water'], boat: ['THE SHIPYARD', 'Find your next horizon'],
+  quests: ['CAPTAIN QUESTS', 'Voyages, milestones, and rewards'],
 };
 
 function icon(kind: Icon, color = '#e9b95b', hidden = false): string {
@@ -100,7 +102,7 @@ export class PanelUI {
     this.previousFocus = document.activeElement as HTMLElement | null;
     this.overlay.hidden = false;
     this.render();
-    this.overlay.querySelector<HTMLButtonElement>('.panel-close')?.focus();
+    this.overlay.querySelector<HTMLElement>('.pixel-panel')?.focus();
   }
 
   hide(): void { this.overlay.hidden = true; this.overlay.replaceChildren(); this.previousFocus?.focus(); }
@@ -120,20 +122,24 @@ export class PanelUI {
   }
 
   private render(): void {
-    const focus = this.overlay.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset : undefined;
+    const activeElement = this.overlay.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+    const focus = activeElement instanceof HTMLButtonElement ? activeElement.dataset : undefined;
+    const panelHadFocus = activeElement?.classList.contains('pixel-panel') ?? false;
     const scroll = this.overlay.querySelector('.panel-body')?.scrollTop ?? 0;
     const content = this.panel === 'skills' ? this.skills() : this.panel === 'shop' ? this.shop()
-      : this.panel === 'character' ? this.profile() : this.panel === 'boat' ? this.boat() : this.collection();
+      : this.panel === 'character' ? this.profile() : this.panel === 'boat' ? this.boat()
+        : this.panel === 'quests' ? this.quests() : this.collection();
     const [title, subtitle] = titles[this.panel];
-    this.overlay.innerHTML = `<section class="pixel-panel ${this.panel === 'skills' ? 'talent-panel' : ''}" role="dialog" aria-modal="true" aria-labelledby="panel-title" data-panel="${this.panel}">
-      <header class="panel-header"><div class="panel-title-icon">${icon(this.panel)}</div><div><h2 id="panel-title">${title}</h2><p>${subtitle}</p></div><button class="panel-close" data-action="close" aria-label="Close panel">×</button></header>
+    const panelIcon = this.panel === 'quests' ? 'codex' : this.panel;
+    this.overlay.innerHTML = `<section class="pixel-panel ${this.panel === 'skills' ? 'talent-panel' : ''}" role="dialog" aria-modal="true" aria-labelledby="panel-title" data-panel="${this.panel}" tabindex="-1">
+      <header class="panel-header"><div class="panel-title-icon">${icon(panelIcon)}</div><div><h2 id="panel-title">${title}</h2><p>${subtitle}</p></div><button class="panel-close" data-action="close" aria-label="Close panel">×</button></header>
       <div class="panel-body">${content}</div>
     </section>`;
     const body = this.overlay.querySelector('.panel-body'); if (body) body.scrollTop = scroll;
     if (focus) {
       const candidates = [...this.overlay.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
       (candidates.find(button => focus.action ? button.dataset.action === focus.action : focus.select ? button.dataset.select === focus.select : false) ?? candidates[0])?.focus({ preventScroll: true });
-    }
+    } else if (panelHadFocus) this.overlay.querySelector<HTMLElement>('.pixel-panel')?.focus({ preventScroll: true });
   }
 
   private collection(): string {
@@ -184,17 +190,17 @@ export class PanelUI {
     while (slots.length < 30) slots.push('<div class="item-slot empty" aria-hidden="true"></div>');
 
     const equipped = [
-      ['rod', 'Rod', rods[p.rodLevel - 1]?.name ?? 'Starter rod'],
+      ['rod', 'Rod', rods[p.equippedRod - 1]?.name ?? 'Starter rod'],
       ['bait', 'Bait', baits[p.selectedBait]?.name ?? 'No bait'],
-      ['boat', 'Boat', boats[p.hullLevel - 1]?.name ?? 'Starter boat'],
+      ['boat', 'Boat', boats[p.equippedBoat - 1]?.name ?? 'Starter boat'],
       ['bag', 'Bag', `${total} / 30`],
     ] as Array<[InventorySprite, string, string]>;
     const statItems: Array<[InventorySprite, string, number]> = [
-      ['gear', 'Focus', p.focus + p.rodLevel],
-      ['rod', 'Fishing', p.rodLevel * 3],
+      ['gear', 'Focus', p.focus + p.equippedRod],
+      ['rod', 'Fishing', p.equippedRod * 3],
       ['star', 'Luck', p.luck + 1],
       ['gear', 'Speed', p.efficiency + p.automation + 1],
-      ['boat', 'Hull', p.hullLevel * 2],
+      ['boat', 'Hull', p.equippedBoat * 2],
     ];
     const details = selected
       ? `<header class="catch-card-header"><span>SELECTED CATCH</span><strong>${escape(selected.rarity.replace(/\s+[IVX]+$/, ''))}</strong></header><div class="inventory-detail-body"><div class="inventory-detail-art">${fishSprite(selected.id)}<span>×${p.fishInventory[selected.id]}</span></div><div class="inventory-detail-copy"><h3>${escape(selected.name)}</h3><p class="catch-summary">A dependable harbor catch, safely stored and ready to sell.</p><div class="catch-metrics"><span><small>TOTAL CAUGHT</small><strong>${p.fishInventory[selected.id]}</strong></span><span><small>SELL VALUE</small><strong>${selected.value}<em> COINS</em></strong></span><span><small>EXPERIENCE</small><strong>${selected.xp}<em> XP</em></strong></span></div></div></div>`
@@ -210,9 +216,9 @@ export class PanelUI {
         <section class="inventory-character" aria-label="Captain equipment and stats">
           <h3 class="inventory-section-title"><span>CAPTAIN</span><small>LOADOUT &amp; PROFILE</small></h3>
           <div class="character-loadout">
-            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="loadout-slots">${equipped.slice(0, 2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'rod' ? rodSprite(p.equippedRod) : kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
             <div class="inventory-portrait"><img src="${captainPortrait}" alt=""><strong>${escape(p.captainName || 'Captain')}</strong><span>LEVEL ${p.level}</span></div>
-            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
+            <div class="loadout-slots">${equipped.slice(2).map(([kind,label,name]) => `<div class="loadout-slot">${kind === 'boat' ? boatSprite(p.equippedBoat) : inventorySprite(kind)}<span>${label}</span><small>${escape(name)}</small></div>`).join('')}</div>
           </div>
           <h3 class="inventory-section-title stats-title"><span>STATS</span><small>CORE ATTRIBUTES</small></h3>
           <div class="inventory-stats">${statItems.map(([kind,label,value]) => `<div>${inventorySprite(kind)}<span>${label}</span><strong>${value}</strong></div>`).join('')}</div>
@@ -229,18 +235,20 @@ export class PanelUI {
     const rod = this.category === 'rods';
     const owned = rod && item.tier <= p.rodLevel;
     const locked = rod && item.tier > p.rodLevel + 1;
-    const equipped = !rod && p.selectedBait === item.tier - 1;
+    const equipped = rod ? p.equippedRod === item.tier : p.selectedBait === item.tier - 1;
     const stock = p.baitStock[item.tier - 1] ?? 0;
-    const slots = source.map(item => this.slot(`${this.category}-${item.tier}`, rod ? inventorySprite('rod') : baitSprite(item.tier), item.name,
-      rod ? item.tier <= p.rodLevel ? '✓' : `T${item.tier}` : `×${p.baitStock[item.tier - 1] ?? 0}`,
+    const slots = source.map(item => this.slot(`${this.category}-${item.tier}`, rod ? rodSprite(item.tier) : baitSprite(item.tier), item.name,
+      rod ? item.tier === p.equippedRod ? 'E' : item.tier <= p.rodLevel ? '✓' : `T${item.tier}` : `×${p.baitStock[item.tier - 1] ?? 0}`,
       rod && item.tier > p.rodLevel + 1 ? 'locked-slot' : ''));
     while (slots.length < 15) slots.push('<div class="item-slot empty" aria-hidden="true"><span>·</span></div>');
-    const purchase = this.button(owned ? 'OWNED' : locked ? 'PREVIOUS ROD REQUIRED' : `BUY · ${item.cost} COINS`, `buy-${item.tier}`, owned || locked || p.coins < item.cost);
+    const purchase = rod
+      ? this.button(equipped ? 'EQUIPPED' : owned ? 'EQUIP ROD' : locked ? 'PREVIOUS ROD REQUIRED' : `BUY · ${item.cost} COINS`, owned ? `equip-rod-${item.tier}` : `buy-${item.tier}`, equipped || locked || (!owned && p.coins < item.cost))
+      : this.button(`BUY · ${item.cost} COINS`, `buy-${item.tier}`, p.coins < item.cost);
     return `<div class="panel-toolbar"><div class="panel-tabs">${this.button('RODS', 'tab-rods', false, rod ? 'active' : '')}${this.button('BAIT', 'tab-bait', false, !rod ? 'active' : '')}</div><span class="wallet">${inventorySprite('coin')} ${p.coins}</span></div>
-      <div class="collection-layout"><div><div class="item-grid">${slots.join('')}</div><div class="grid-caption">${rod ? 'Upgrade rods in order to reach rarer fish.' : `Every tin contains ${3 + p.frugality} bait.`}</div></div>
-      ${this.detail(rod ? inventorySprite('rod') : baitSprite(item.tier), `${item.rarity} / TIER ${item.tier}`, item.name,
+      <div class="collection-layout"><div><div class="item-grid">${slots.join('')}</div><div class="grid-caption">${rod ? 'Upgrade rods in order, then re-equip any rod you own.' : `Every tin contains ${3 + p.frugality} bait.`}</div></div>
+      ${this.detail(rod ? rodSprite(item.tier) : baitSprite(item.tier), `${item.rarity} / TIER ${item.tier}`, item.name,
         rod ? `Unlocks fish requiring a tier ${item.tier} rod. Each rod also widens the catch zone.` : `Tier ${item.tier} bait attracts new species. One bait is used per cast.`,
-        `<dl class="detail-stats"><div><dt>${rod ? 'Status' : 'In your bag'}</dt><dd>${rod ? owned ? 'Owned' : locked ? 'Locked' : 'Available' : stock}</dd></div><div><dt>${rod ? 'Cost' : 'Per tin'}</dt><dd>${rod ? item.cost + ' coins' : (3 + p.frugality) + ' bait'}</dd></div></dl><div class="detail-actions">${purchase}${!rod ? this.button(equipped ? 'EQUIPPED' : 'EQUIP BAIT', `equip-${item.tier}`, equipped || stock === 0, 'secondary') : ''}</div>${!owned && !locked && p.coins < item.cost ? '<p class="small-note">Catch more fish to earn the remaining coins.</p>' : ''}`)}
+        `<dl class="detail-stats"><div><dt>${rod ? 'Status' : 'In your bag'}</dt><dd>${rod ? equipped ? 'Equipped' : owned ? 'Owned' : locked ? 'Locked' : 'Available' : stock}</dd></div><div><dt>${rod ? 'Cost' : 'Per tin'}</dt><dd>${rod ? item.cost + ' coins' : (3 + p.frugality) + ' bait'}</dd></div></dl><div class="detail-actions">${purchase}${!rod ? this.button(equipped ? 'EQUIPPED' : 'EQUIP BAIT', `equip-${item.tier}`, equipped || stock === 0, 'secondary') : ''}</div>${!owned && !locked && p.coins < item.cost ? '<p class="small-note">Catch more fish to earn the remaining coins.</p>' : ''}`)}
       </div>`;
   }
 
@@ -268,14 +276,46 @@ export class PanelUI {
       </div><div class="talent-legend"><span>◆ Learned</span><span>◇ Available</span><span>× Locked branch</span></div>`;
   }
 
+  private quests(): string {
+    const { progress: p, fish } = this.model;
+    const discovered = fish.filter(item => (p.fishInventory[item.id] ?? 0) > 0).length;
+    const quests = [
+      { icon: 'fish' as InventorySprite, eyebrow: 'FISHING MILESTONE', name: 'Seasoned Angler', detail: 'Land 25 catches on any voyage.', value: p.catches, goal: 25 },
+      { icon: 'star' as InventorySprite, eyebrow: 'DISCOVERY MILESTONE', name: 'Field Research', detail: 'Record 10 different species in your journal.', value: discovered, goal: 10 },
+      { icon: 'boat' as InventorySprite, eyebrow: 'FLEET MILESTONE', name: 'Master Shipwright', detail: 'Commission all seven boats in the shipyard.', value: p.hullLevel, goal: 7 },
+    ];
+    const completed = quests.filter(quest => quest.value >= quest.goal).length;
+    const cards = quests.map(quest => {
+      const done = quest.value >= quest.goal;
+      const current = Math.min(quest.value, quest.goal);
+      const percentage = Math.round(current / quest.goal * 100);
+      return `<article class="quest-card ${done ? 'completed' : ''}">
+        <div class="quest-icon">${inventorySprite(quest.icon)}${done ? '<span class="quest-check">✓</span>' : ''}</div>
+        <div class="quest-copy"><span class="eyebrow">${quest.eyebrow}</span><h3>${quest.name}</h3><p>${quest.detail}</p>
+          <div class="quest-meter" role="progressbar" aria-label="${quest.name}" aria-valuemin="0" aria-valuemax="${quest.goal}" aria-valuenow="${current}"><span style="width:${percentage}%"></span></div>
+          <div class="quest-count"><strong>${current} / ${quest.goal}</strong><span>${done ? 'VOYAGE COMPLETE' : percentage + '% COMPLETE'}</span></div>
+        </div>
+      </article>`;
+    }).join('');
+    const totalProgress = Math.round(quests.reduce((sum, quest) => sum + Math.min(quest.value / quest.goal, 1), 0) / quests.length * 100);
+    return `<div class="panel-toolbar quest-toolbar"><span>VOYAGE BOARD · ${quests.length - completed} ACTIVE</span><span><strong>${completed}</strong> / ${quests.length} COMPLETE</span></div>
+      <div class="quest-layout"><section class="quest-board" aria-label="Captain quests">${cards}</section>
+        <aside class="quest-ledger"><div class="quest-ledger-icon">${inventorySprite('star')}</div><span class="eyebrow">CAPTAIN'S LEDGER</span><h3>${totalProgress}% COMPLETE</h3>
+          <p>Milestones update automatically as you fish, discover species, and expand your fleet.</p>
+          <dl class="detail-stats"><div><dt>Finished</dt><dd>${completed} quests</dd></div><div><dt>In progress</dt><dd>${quests.length - completed} quests</dd></div></dl>
+          <div class="quest-overall"><span style="width:${totalProgress}%"></span></div><small>Complete every voyage to finish this captain's chapter.</small>
+        </aside>
+      </div>`;
+  }
+
   private profile(): string {
     const { progress: p, streak, autoFishing, fish, rods, baits, boats } = this.model;
     const discovered = fish.filter(f => (p.fishInventory[f.id] ?? 0) > 0).length;
     return `<div class="captain-banner"><div class="portrait-slot"><img src="${captainPortrait}" alt=""></div><div><span class="eyebrow">LEVEL ${p.level} CAPTAIN</span><h3>${escape(p.captainName || 'Captain')}</h3><label class="xp-label" for="captain-xp">${p.xp} / ${p.level * 100} XP</label><progress id="captain-xp" max="${p.level * 100}" value="${p.xp}"></progress></div></div>
       <div class="stat-grid">${[['COINS',p.coins],['CATCHES',p.catches],['COLLECTION',`${discovered}/${fish.length}`],['STREAK',streak],['BEST STREAK',p.bestStreak],['TALENT POINTS',p.skillPoints]].map(([label,value]) => `<div class="stat-tile"><strong>${value}</strong><span>${label}</span></div>`).join('')}</div>
       <h4 class="section-label">EQUIPPED FOR THE VOYAGE</h4><div class="equipment-grid">${[
-        ['rod', rods[p.rodLevel - 1].name, `TIER ${p.rodLevel} ROD`], ['bait', baits[p.selectedBait].name, `${p.baitStock[p.selectedBait]} REMAINING`], ['boat', boats[p.hullLevel - 1].name, `TIER ${p.hullLevel} BOAT`],
-      ].map(([kind,name,label]) => `<div class="equipment-card">${kind === 'bait' ? baitSprite(p.selectedBait + 1) : inventorySprite(kind as InventorySprite)}<div><strong>${escape(name)}</strong><span>${label}</span></div></div>`).join('')}</div>
+        ['rod', rods[p.equippedRod - 1].name, `TIER ${p.equippedRod} ROD`], ['bait', baits[p.selectedBait].name, `${p.baitStock[p.selectedBait]} REMAINING`], ['boat', boats[p.equippedBoat - 1].name, `TIER ${p.equippedBoat} BOAT`],
+      ].map(([kind,name,label]) => `<div class="equipment-card">${kind === 'rod' ? rodSprite(p.equippedRod) : kind === 'bait' ? baitSprite(p.selectedBait + 1) : boatSprite(p.equippedBoat)}<div><strong>${escape(name)}</strong><span>${label}</span></div></div>`).join('')}</div>
       <div class="auto-setting"><div><strong>Auto fishing</strong><p>Keep casting while you watch the waves.</p></div><button class="pixel-button auto-switch ${autoFishing ? 'active' : ''}" data-action="auto" role="switch" aria-checked="${autoFishing}">${autoFishing ? 'ON' : 'OFF'}</button></div>`;
   }
 
@@ -285,9 +325,11 @@ export class PanelUI {
     const boat = boats.find(b => String(b.tier) === this.selected)!;
     const owned = boat.tier <= p.hullLevel;
     const locked = boat.tier > p.hullLevel + 1;
-    const hull = `<svg class="ship-preview" viewBox="0 0 160 90" shape-rendering="crispEdges" aria-hidden="true"><path fill="#76b8b5" d="M0 66h160v24H0z"/><path fill="#d6e6c2" d="M5 73h40v2H5zM72 79h45v2H72zM122 71h30v2h-30z"/><path fill="#302f30" d="M76 6h4v52h-4z"/><path fill="#efe0b3" d="M83 11v36h39V42h-6v-7h-8v-8H98v-8h-8v-8z"/><path fill="${hex(boat.hull)}" stroke="#302f30" stroke-width="3" d="M28 53h108l-12 18H44z"/><path fill="${hex(boat.trim)}" d="M30 54h104v5H33z"/><path fill="#b78a55" d="M47 44h22v10H47z"/></svg>`;
-    return `<div class="panel-toolbar"><span>FLEET · ${p.hullLevel} / ${boats.length}</span><span class="wallet">${inventorySprite('coin')} ${p.coins}</span></div><div class="collection-layout"><div><div class="ship-display">${hull}<span>${escape(boat.name)}</span></div><div class="boat-slots">${boats.map(b => this.slot(String(b.tier), inventorySprite('boat'), b.name, `T${b.tier}`, b.tier > p.hullLevel + 1 ? 'locked-slot' : '')).join('')}</div><div class="grid-caption">Each hull opens up a new horizon.</div></div>${this.detail(inventorySprite('boat'), `TIER ${boat.tier} / ${owned ? 'OWNED' : locked ? 'LOCKED' : 'NEXT UPGRADE'}`, boat.name, boat.bonus,
-      `<dl class="detail-stats"><div><dt>Upgrade cost</dt><dd>${boat.cost} coins</dd></div><div><dt>Your vessel</dt><dd>${escape(boats[p.hullLevel - 1].name)}</dd></div></dl>${this.button(owned ? boat.tier === p.hullLevel ? 'CURRENT VESSEL' : 'OWNED' : locked ? 'PREVIOUS BOAT REQUIRED' : 'UPGRADE VESSEL', 'boat', owned || locked || p.coins < boat.cost)}${!owned && !locked && p.coins < boat.cost ? '<p class="small-note">Earn more coins to commission this vessel.</p>' : ''}`)}</div>`;
+    const equipped = boat.tier === p.equippedBoat;
+    const hull = boatSprite(boat.tier, true);
+    const action = owned ? `equip-boat-${boat.tier}` : `buy-boat-${boat.tier}`;
+    return `<div class="panel-toolbar"><span>FLEET · ${p.hullLevel} / ${boats.length}</span><span class="wallet">${inventorySprite('coin')} ${p.coins}</span></div><div class="collection-layout"><div><div class="ship-display">${hull}<span>${escape(boat.name)}</span></div><div class="boat-slots">${boats.map(b => this.slot(String(b.tier), boatSprite(b.tier), b.name, b.tier === p.equippedBoat ? 'E' : `T${b.tier}`, b.tier > p.hullLevel + 1 ? 'locked-slot' : '')).join('')}</div><div class="grid-caption">Purchase vessels in order, then re-equip any boat in your fleet.</div></div>${this.detail(boatSprite(boat.tier), `TIER ${boat.tier} / ${equipped ? 'EQUIPPED' : owned ? 'OWNED' : locked ? 'LOCKED' : 'NEXT UPGRADE'}`, boat.name, boat.bonus,
+      `<dl class="detail-stats"><div><dt>Upgrade cost</dt><dd>${boat.cost} coins</dd></div><div><dt>Your vessel</dt><dd>${escape(boats[p.equippedBoat - 1].name)}</dd></div></dl>${this.button(equipped ? 'CURRENT VESSEL' : owned ? 'EQUIP VESSEL' : locked ? 'PREVIOUS BOAT REQUIRED' : 'UPGRADE VESSEL', action, equipped || locked || (!owned && p.coins < boat.cost))}${!owned && !locked && p.coins < boat.cost ? '<p class="small-note">Earn more coins to commission this vessel.</p>' : ''}`)}</div>`;
   }
 
   private onClick(event: MouseEvent): void {
@@ -299,9 +341,12 @@ export class PanelUI {
     if (command?.startsWith('tab-')) { this.category = command === 'tab-rods' ? 'rods' : 'bait'; this.selected = ''; this.render(); return; }
     let action: PanelAction | undefined;
     if (command === 'learn') action = { type: 'skill', key: this.selected as SkillKey };
-    if (command === 'auto' || command === 'boat') action = { type: command };
-    if (command?.startsWith('buy-')) action = { type: this.category === 'rods' ? 'rod' : 'bait', tier: Number(command.slice(4)) };
-    if (command?.startsWith('equip-')) action = { type: 'equip', tier: Number(command.slice(6)) };
+    if (command === 'auto') action = { type: 'auto' };
+    if (command?.startsWith('buy-boat-')) action = { type: 'boat', tier: Number(command.slice(9)) };
+    if (command?.startsWith('equip-boat-')) action = { type: 'equip-boat', tier: Number(command.slice(11)) };
+    if (command?.startsWith('equip-rod-')) action = { type: 'equip-rod', tier: Number(command.slice(10)) };
+    if (command?.startsWith('buy-') && !command.startsWith('buy-boat-')) action = { type: this.category === 'rods' ? 'rod' : 'bait', tier: Number(command.slice(4)) };
+    if (command?.startsWith('equip-') && !command.startsWith('equip-boat-') && !command.startsWith('equip-rod-')) action = { type: 'equip', tier: Number(command.slice(6)) };
     if (action) {
       this.action(action);
       if (action.type === 'auto') this.model.autoFishing = !this.model.autoFishing;
